@@ -1,0 +1,30 @@
+# Personal / local-only — never shared
+youtube.py
+Enable YouTube (personal).command
+.claude/
+
+# macOS + Python cruft
+.DS_Store
+__pycache__/
+*.pyc
+
+# Local run outputs & samples
+mom_output/
+MoM (offline*.html
+MoM (offline*.json
+Gemini prompt — *.txt
+expected.html
+expected.txt
+
+# Large media / recordings should never be committed
+*.mp4
+*.mov
+*.mkv
+*.webm
+*.avi
+*.m4v
+*.wav
+*.mp3
+*.m4a
+*.aac
+*.eml

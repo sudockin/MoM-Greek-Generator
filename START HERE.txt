@@ -1,0 +1,58 @@
+============================================================
+  MoM Generator — Minutes of Meeting from a recording
+  100% on your Mac. No cloud. No cost. Nothing leaves your laptop.
+============================================================
+
+WHAT IT DOES
+  Drop in a meeting recording (Greek is fine) and it produces a clean Greek
+  transcript that already labels WHO SAID WHAT — by reading the speaker names
+  off the video (Google Meet / Teams). Download that transcript and hand it to
+  Gemini (together with your screenshots) to generate the English Minutes of
+  Meeting. Transcription runs on your Mac's GPU, so it's fast.
+  (Optional: tick "also draft it locally" to get a rough English MoM offline.)
+
+BEFORE YOU START — you need:
+  • A Mac with Apple Silicon (M1/M2/M3/M4).
+  • About 15 GB of free disk space.
+  • Internet for the one-time install (downloads a few GB). Then it's offline.
+
+------------------------------------------------------------
+STEP 1 — INSTALL  (one time, ~10–15 min, no typing)
+------------------------------------------------------------
+  1) Unzip this folder somewhere easy, like your Desktop.
+
+  2) Double-click:   «Install MoM Generator.command»
+
+     • If macOS says "unidentified developer": right-click it (or Control-click)
+       → Open → Open. You only do this once.
+     • A window opens and does everything automatically. It may ask for your
+       Mac password once. Just wait until it says "All set!".
+
+  That's it — no commands to type, and no accounts or sign-ups needed.
+
+------------------------------------------------------------
+STEP 2 — USE IT  (every time)
+------------------------------------------------------------
+  1) Double-click:   «Start MoM Generator.command»
+     (Same "right-click → Open" the first time, if asked.)
+     A small window opens — keep it open while you work; close it when done.
+
+  2) Your browser opens the tool. Type the attendees' names (recommended — it
+     makes the speaker labelling rock-solid), drag in a recording
+     (.mp4 .mov .m4a .mp3 .wav), then click "Generate transcript" and watch the
+     progress bar. Speaker names are filled in from the video automatically;
+     you can correct any of them and click "Apply names".
+
+  3) When it's done, click "⬇️ Transcript for Gemini (.txt)" and attach that
+     file to Gemini (with your screenshots) to write the MoM in English.
+     A copy is also saved in:  Documents > MoM Outputs
+
+------------------------------------------------------------
+GOOD TO KNOW
+------------------------------------------------------------
+  • Keep the laptop lid OPEN while a meeting is processing (it pauses on sleep).
+  • The first recording downloads the speech model (~3 GB) once, then it's fast.
+  • Everything is local — your audio, transcript, and notes never leave the Mac.
+  • Full details + troubleshooting are in README.md (in this folder).
+
+Questions? Ask whoever shared this with you.
