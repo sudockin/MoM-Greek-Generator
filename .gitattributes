@@ -1,0 +1,15 @@
+# Normalize line endings; keep shell/command scripts LF so they run on macOS.
+* text=auto eol=lf
+*.command text eol=lf
+*.sh      text eol=lf
+*.py      text eol=lf
+*.md      text
+*.txt     text
+
+# Treat media/binaries as binary (never committed anyway; see .gitignore).
+*.mp4 binary
+*.mov binary
+*.wav binary
+*.mp3 binary
+*.png binary
+*.jpg binary
