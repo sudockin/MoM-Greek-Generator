@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 360" width="1280" height="360" role="img" aria-label="MoM Generator — Greek meeting recording to speaker-labelled transcript to styled Minutes of Meeting, 100% on-device">
+  <defs>
+    <linearGradient id="card" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#FFF6F5"/>
+    </linearGradient>
+    <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FB4A57"/>
+      <stop offset="1" stop-color="#D81E2C"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#FB4A57"/>
+      <stop offset="1" stop-color="#FF8A73"/>
+    </linearGradient>
+  </defs>
+
+  <!-- card -->
+  <rect x="8" y="8" width="1264" height="344" rx="28" fill="url(#card)" stroke="#EFE3E1"/>
+  <rect x="8" y="8" width="1264" height="8" rx="4" fill="url(#accent)"/>
+
+  <!-- app icon tile -->
+  <g transform="translate(72,84)">
+    <rect width="104" height="104" rx="24" fill="url(#tile)"/>
+    <g transform="translate(30,26)" fill="none" stroke="#FFFFFF" stroke-width="5" stroke-linecap="round">
+      <rect x="0" y="0" width="44" height="54" rx="7" fill="#FFFFFF" stroke="none"/>
+      <line x1="9" y1="15" x2="35" y2="15" stroke="#FB4A57"/>
+      <line x1="9" y1="27" x2="35" y2="27" stroke="#FB4A57"/>
+      <line x1="9" y1="39" x2="26" y2="39" stroke="#FB4A57"/>
+    </g>
+  </g>
+
+  <!-- wordmark + tagline -->
+  <g font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+    <text x="216" y="120" font-size="58" font-weight="800" fill="#17181D" letter-spacing="-1">MoM Generator</text>
+    <text x="218" y="162" font-size="23" font-weight="600" fill="#D81E2C">Meeting recording → who-said-what transcript → styled Minutes of Meeting</text>
+    <text x="218" y="196" font-size="19" fill="#5B6472">Greek in, English out — running entirely on your Mac. No API keys, no cloud, nothing leaves the machine.</text>
+
+    <!-- feature chips -->
+    <g font-size="18" font-weight="600">
+      <g transform="translate(216,232)">
+        <rect width="196" height="42" rx="21" fill="#FFF0EF" stroke="#F7C9C4"/>
+        <text x="24" y="27" fill="#C21F2B">🔒 100% on-device</text>
+      </g>
+      <g transform="translate(424,232)">
+        <rect width="168" height="42" rx="21" fill="#FFF0EF" stroke="#F7C9C4"/>
+        <text x="22" y="27" fill="#C21F2B">🔑 No API keys</text>
+      </g>
+      <g transform="translate(604,232)">
+        <rect width="196" height="42" rx="21" fill="#EFF6FF" stroke="#BFDBFE"/>
+        <text x="22" y="27" fill="#1D4ED8">🌐 Greek → English</text>
+      </g>
+      <g transform="translate(812,232)">
+        <rect width="232" height="42" rx="21" fill="#F0FDF4" stroke="#BBF7D0"/>
+        <text x="22" y="27" fill="#15803D">🗣️ Speaker names via OCR</text>
+      </g>
+      <g transform="translate(1056,232)">
+        <rect width="150" height="42" rx="21" fill="#FFFBEB" stroke="#FDE68A"/>
+        <text x="20" y="27" fill="#B45309">⚡ Metal-fast</text>
+      </g>
+    </g>
+
+    <!-- pipeline strip -->
+    <g transform="translate(216,300)" font-size="17" fill="#8A93A2" font-weight="500">
+      <text x="0" y="20">🎬 recording</text>
+      <text x="128" y="20" fill="#C9CED6">──▸</text>
+      <text x="186" y="20">🎧 audio</text>
+      <text x="290" y="20" fill="#C9CED6">──▸</text>
+      <text x="348" y="20">✍️ whisper.cpp (GPU)</text>
+      <text x="560" y="20" fill="#C9CED6">──▸</text>
+      <text x="618" y="20">👁️ Apple Vision OCR</text>
+      <text x="820" y="20" fill="#C9CED6">──▸</text>
+      <text x="878" y="20" fill="#C21F2B" font-weight="700">📝 transcript + MoM</text>
+    </g>
+  </g>
+</svg>
