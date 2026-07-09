@@ -340,6 +340,36 @@ def detect_all():
     # YouTube/link support is an optional personal add-on (separate youtube.py +
     # yt-dlp + Deno). Absent from the shared build; the URL field only shows if present.
     ytdlp = HAS_YOUTUBE and youtube_dl.available()
+
+    # ---- Capability summary for the pre-run traffic-light card (UI D1) ----
+    # Reading only — reuses existing detection (ocrmac_python / ollama models).
+    ocr_py, ocr_reason = ocrmac_python()
+    if whisper:
+        if whisper["type"] == "cpp":
+            _mdl = os.path.basename(whisper["model"])
+            eng = {"name": f"whisper.cpp ({_mdl})", "type": "cpp",
+                   "detail": "Metal GPU" if HQ_CPP_MODEL_RE.search(_mdl) else "CPU"}
+        elif whisper["type"] == "whisperx":
+            eng = {"name": f"WhisperX ({whisper['model']})", "type": "whisperx", "detail": "CPU int8"}
+        else:
+            eng = {"name": "openai-whisper", "type": "openai", "detail": ""}
+    else:
+        eng = {"name": None, "type": None, "detail": ""}
+    if models:
+        om = {"ok": True, "reason": f"Ollama + {len(models)} model(s)", "fix": ""}
+    elif not ollama_bin:
+        om = {"ok": False, "reason": "Ollama not installed", "fix": "Run ./setup.sh"}
+    elif models is None:
+        om = {"ok": False, "reason": "Ollama not running", "fix": "Open the Ollama app"}
+    else:
+        om = {"ok": False, "reason": "No model installed", "fix": "Run: ollama pull qwen2.5:7b"}
+    cap = {
+        "engine": eng,
+        "speaker_names": {"ok": bool(ocr_py),
+                          "reason": "Apple Vision OCR ready" if ocr_py else ocr_reason,
+                          "fix": "" if ocr_py else "Run ./setup.sh to install ocrmac"},
+        "offline_mom": om,
+    }
     return {
         "ffmpeg": ffmpeg,
         "whisper": whisper,
@@ -351,6 +381,7 @@ def detect_all():
         "notes": notes,
         "ready": not issues,
         "default_model": "qwen2.5:7b" if (models and "qwen2.5:7b" in models) else (models[0] if models else None),
+        "cap": cap,
     }
 
 
@@ -506,6 +537,17 @@ def run_pipeline(jid, src_path, language, model, attendees="", from_url=False):
                 job["transcript"] = transcript
                 emit(jid, {"type": "transcript", "text": transcript})
                 speaker_map = {s: s for s in speakers}  # identity; user can correct in the panel
+            # ---- Coverage (UI D3): % of transcript segments that received a name ----
+            seg_lines = [ln for ln in transcript.split("\n") if ln.strip()]
+            named_set = set(speakers)
+            named_count = sum(1 for ln in seg_lines
+                              if ":" in ln and ln.split(":", 1)[0].strip() in named_set)
+            coverage = (named_count / len(seg_lines)) if seg_lines else 0.0
+            job["coverage"] = coverage
+            job["named_count"] = named_count
+            job["segment_count"] = len(seg_lines)
+            emit(jid, {"type": "coverage", "pct": coverage,
+                       "named": named_count, "total": len(seg_lines)})
             # Video frames no longer needed — drop the uploaded temp copy now.
             if is_upload_temp and os.path.exists(src_path):
                 try:
@@ -537,10 +579,15 @@ def run_pipeline(jid, src_path, language, model, attendees="", from_url=False):
         roster_sorted = sorted(roster, key=lambda n: -roster[n])
         job["speakers"] = speakers
         job["roster"] = roster_sorted
+        job["roster_counts"] = roster   # {name: frame_count} for the correction panel (D3)
         job["status"] = "done"
         emit(jid, {"type": "done", "markdown": markdown, "outdir": outdir,
                    "transcript": transcript, "speakers": speakers,
-                   "speaker_map": speaker_map, "roster": roster_sorted})
+                   "speaker_map": speaker_map, "roster": roster_sorted,
+                   "roster_counts": roster,
+                   "coverage": job.get("coverage"),
+                   "named_count": job.get("named_count"),
+                   "segment_count": job.get("segment_count")})
     except Exception as e:  # noqa: BLE001
         job["status"] = "error"
         job["error"] = str(e)
@@ -1353,7 +1400,9 @@ class Handler(BaseHTTPRequestHandler):
             "status": job.get("status"), "filename": job.get("filename"),
             "markdown": job.get("markdown"), "transcript": job.get("transcript"),
             "speakers": job.get("speakers", []), "speaker_map": job.get("speaker_map", {}),
-            "roster": job.get("roster", []), "outdir": job.get("outdir"),
+            "roster": job.get("roster", []), "roster_counts": job.get("roster_counts", {}),
+            "coverage": job.get("coverage"), "named_count": job.get("named_count"),
+            "segment_count": job.get("segment_count"), "outdir": job.get("outdir"),
             "error": job.get("error"),
         }))
 
@@ -1424,6 +1473,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
                  display:flex;align-items:center;justify-content:center; }
   header h1 { font-size:17px; margin:0; font-weight:500; letter-spacing:-.2px; }
   header p { margin:2px 0 0; color:var(--muted); font-size:13px; }
+  a { color:var(--accent2); } a:hover { color:var(--accent-dark); }
   /* inline SVG icons (offline sprite) — inherit text color + size */
   svg.ic { width:1.05em; height:1.05em; flex-shrink:0; vertical-align:-.15em; }
   .badge { font-size:11px; font-weight:500; padding:3px 9px; border-radius:999px;
@@ -1477,16 +1527,45 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .banner.warn { background:var(--amber-tint); border:1px solid var(--amber-border); color:#92400e; }
   .banner ul { margin:8px 0 0 18px; padding:0; }
   .banner code { background:rgba(0,0,0,.06); padding:1px 5px; border-radius:4px; }
+
+  /* ---- D1: pre-run capability card (traffic lights) ---- */
+  #capCard { border:1px solid var(--border); background:var(--panel2); border-radius:10px; padding:13px 16px; margin-bottom:16px; }
+  #capCard .cap-title { font-size:12px; font-weight:600; letter-spacing:.03em; text-transform:uppercase; color:var(--muted); margin-bottom:10px; }
+  .cap-row { display:flex; align-items:baseline; gap:10px; padding:5px 0; font-size:13.5px; }
+  .cap-row + .cap-row { border-top:1px solid var(--border); }
+  .cap-dot { font-size:11px; line-height:1.4; flex-shrink:0; width:16px; text-align:center; }
+  .cap-label { width:120px; flex-shrink:0; font-weight:500; color:var(--text); }
+  .cap-val { color:var(--muted); flex:1; }
+  .cap-val .cap-strong { color:var(--text); font-weight:500; }
+  .cap-fix { display:inline-block; margin-left:6px; font-size:12px; color:var(--accent-dark); background:var(--accent-tint);
+             border:1px solid #fecaca; border-radius:6px; padding:1px 8px; }
+  .cap-fix.opt { color:#92400e; background:var(--amber-tint); border-color:var(--amber-border); }
+
   /* processing stage cards */
   .steps { display:flex; gap:10px; margin:2px 0 16px; flex-wrap:wrap; }
-  .step { flex:1; min-width:140px; background:var(--panel2); border:1px solid var(--border); border-radius:8px;
-          padding:12px 14px; font-size:13px; color:var(--muted); display:flex; align-items:center; gap:9px; }
+  .step { flex:1; min-width:150px; background:var(--panel2); border:1px solid var(--border); border-radius:8px;
+          padding:10px 13px; font-size:13px; color:var(--muted); display:flex; align-items:center; gap:9px; }
   .step .ic { width:20px;height:20px;border-radius:50%;border:2px solid var(--border-strong);flex-shrink:0;
               display:flex;align-items:center;justify-content:center;font-size:11px; }
-  .step.active { border-color:var(--accent); color:var(--text); background:var(--accent-tint); }
+  .step-body { display:flex; flex-direction:column; min-width:0; line-height:1.25; }
+  .step-name { font-weight:500; color:var(--text); }
+  .step-reason { font-size:11px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:170px; }
+  .step { color:var(--text); }
+  .step .step-name { color:var(--muted); }
+  .step.active { border-color:var(--accent); background:var(--accent-tint); }
   .step.active .ic { border-color:var(--accent); color:var(--accent); }
-  .step.done { border-color:var(--green); color:var(--text); background:var(--green-tint); }
+  .step.active .step-name { color:var(--text); }
+  .step.done { border-color:var(--green); background:var(--green-tint); }
   .step.done .ic { border-color:var(--green); background:var(--green); color:#fff; }
+  .step.done .step-name { color:#166534; }
+  .step.skipped { border-color:var(--amber-border); background:var(--amber-tint); }
+  .step.skipped .ic { border-color:var(--yellow); color:var(--yellow); }
+  .step.skipped .step-name { color:#92400e; }
+  .step.skipped .step-reason { color:#b45309; }
+  .step.error { border-color:#fecaca; background:var(--accent-tint); }
+  .step.error .ic { border-color:var(--red); color:var(--red); }
+  .step.error .step-name { color:var(--accent-dark); }
+  .step.error .step-reason { color:var(--accent-dark); }
   #progWrap { margin:4px 0 14px; }
   #progBar { height:8px; background:var(--panel2); border:1px solid var(--border); border-radius:6px; overflow:hidden; }
   #progFill { height:100%; width:0; background:var(--accent); border-radius:6px; transition:width .4s ease; }
@@ -1531,8 +1610,22 @@ INDEX_HTML = r"""<!DOCTYPE html>
   #speakerPanel h4 { margin:0 0 4px; font-size:14.5px; font-weight:500; display:flex; align-items:center; gap:7px; }
   #speakerPanel .sp-sub { color:var(--muted); font-size:12.5px; font-weight:400; display:block; margin-bottom:12px; }
   #speakerPanel .sp-row { display:flex; align-items:center; gap:10px; margin:8px 0; }
-  #speakerPanel .sp-row .lab { width:120px; color:#92400e; font-size:12.5px; font-weight:500; }
+  #speakerPanel .sp-row .lab { width:140px; color:#92400e; font-size:12.5px; font-weight:500; display:flex; flex-direction:column; align-items:flex-start; gap:4px; flex-shrink:0; }
+  #speakerPanel .sp-count { font-size:11px; font-weight:600; color:#b45309; background:#fef3c7; border:1px solid var(--amber-border);
+                            border-radius:999px; padding:1px 7px; white-space:nowrap; }
   #speakerPanel input { flex:1; background:var(--panel); color:var(--text); border:1px solid var(--border-strong); border-radius:8px; padding:8px 11px; font-size:14px; }
+  /* coverage indicator */
+  .coverage { display:flex; align-items:center; gap:10px; margin:2px 0 14px; font-size:12.5px; color:#92400e; }
+  .coverage .cov-bar { flex:1; max-width:220px; height:7px; background:#fef3c7; border:1px solid var(--amber-border); border-radius:5px; overflow:hidden; }
+  .coverage .cov-fill { height:100%; background:var(--yellow); border-radius:5px; }
+  .coverage.low .cov-fill { background:var(--red); }
+  .coverage strong { color:#78350f; font-variant-numeric:tabular-nums; }
+  /* empty / 0% state — shows the D1 reason inline */
+  .sp-empty { display:flex; gap:11px; align-items:flex-start; }
+  .sp-empty .ic { color:var(--yellow); width:20px; height:20px; flex-shrink:0; margin-top:1px; }
+  .sp-empty .sp-empty-body { font-size:13px; color:#92400e; }
+  .sp-empty .sp-empty-reason { color:#78350f; font-weight:500; }
+  .sp-empty .sp-empty-fix { display:block; margin-top:5px; color:#b45309; }
   details { margin-top:18px; }
   summary { cursor:pointer; color:var(--muted); font-size:13px; }
   .spin { display:inline-block; width:14px;height:14px;border:2px solid rgba(255,255,255,.3);
@@ -1625,6 +1718,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <!-- STEP 3 — generate -->
     <div class="step-block">
       <div class="step-head"><span class="step-num">3</span> Generate</div>
+      <div id="capCard" class="hidden"></div>
       <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap">
         <button class="primary" id="go" disabled>Generate transcript</button>
         <span class="reason" id="goReason">Choose a recording first.</span>
@@ -1634,9 +1728,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
   <div class="card hidden" id="progCard">
     <div class="steps">
-      <div class="step" data-k="audio"><span class="ic" data-n="1">1</span> Extracting audio</div>
-      <div class="step" data-k="transcribe"><span class="ic" data-n="2">2</span> Transcribing (Greek)</div>
-      <div class="step" data-k="names"><span class="ic" data-n="3">3</span> Reading speaker names</div>
+      <div class="step" data-k="audio"><span class="ic" data-n="1">1</span><span class="step-body"><span class="step-name">Audio</span><span class="step-reason"></span></span></div>
+      <div class="step" data-k="transcribe"><span class="ic" data-n="2">2</span><span class="step-body"><span class="step-name">Transcribe</span><span class="step-reason"></span></span></div>
+      <div class="step" data-k="names"><span class="ic" data-n="3">3</span><span class="step-body"><span class="step-name">Name speakers</span><span class="step-reason"></span></span></div>
+      <div class="step" data-k="mom"><span class="ic" data-n="4">4</span><span class="step-body"><span class="step-name">MoM</span><span class="step-reason"></span></span></div>
     </div>
     <div id="progWrap">
       <div id="progBar"><div id="progFill"></div></div>
@@ -1697,6 +1792,15 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <script>
 const $ = s => document.querySelector(s);
 let chosenFile = null, currentJob = null, momText = "", transcriptText = "", styledHtml = "", currentOutdir = "";
+// D1/D2/D3 run-scoped state
+let healthCap = null;      // capability summary from /health (D1)
+let wantMom = false;       // did this run request a local MoM?
+let isVideoInput = true;   // best-effort audio/video guess from the filename
+let namesReason = "";      // last skip/error reason for the "Name speakers" step (D2/D3)
+let coverageInfo = null;   // {pct, named, total} from the coverage event (D3)
+
+const AUDIO_ONLY_RE = /\.(m4a|mp3|wav|aac|flac|ogg|opus|aiff?|wma)$/i;
+const VIDEO_RE = /\.(mp4|mov|mkv|webm|avi|m4v)$/i;
 
 async function loadHealth(){
   let h;
@@ -1722,7 +1826,47 @@ async function loadHealth(){
     b.innerHTML = icon('alert-triangle')+' Some tools are missing — run <code>./setup.sh</code>:<ul>' +
       h.issues.map(i=>'<li>'+i+'</li>').join('') + '</ul>' + notes;
   }
+  healthCap = h.cap || null;
+  renderCapCard(healthCap);   // D1 — pre-run traffic-light card
   updateGo();
+}
+
+// D1 — render the pre-run capability card (🟢/🟡/🔴). Reads /health only.
+function DOT(state){ return state==='green'?'🟢':(state==='yellow'?'🟡':'🔴'); }
+function capRow(state, label, val, fix, optFix){
+  const fixHtml = fix ? '<span class="cap-fix'+(optFix?' opt':'')+'">'+esc(fix)+'</span>' : '';
+  return '<div class="cap-row"><span class="cap-dot">'+DOT(state)+'</span>'+
+         '<span class="cap-label">'+esc(label)+'</span>'+
+         '<span class="cap-val">'+val+fixHtml+'</span></div>';
+}
+function renderCapCard(cap){
+  const card = $('#capCard');
+  if(!cap){ card.classList.add('hidden'); return; }
+  card.classList.remove('hidden');
+  const rows = [];
+  // Engine
+  const e = cap.engine || {};
+  if(e.name){
+    const det = e.detail ? ' · '+esc(e.detail) : '';
+    rows.push(capRow('green','Engine','<span class="cap-strong">'+esc(e.name)+'</span>'+det));
+  } else {
+    rows.push(capRow('red','Engine','No transcriber found', 'Run ./setup.sh'));
+  }
+  // Speaker names (OCR — video only)
+  const sn = cap.speaker_names || {};
+  if(sn.ok){
+    rows.push(capRow('green','Speaker names','On-screen names (OCR) ready <span style="opacity:.75">· video files only</span>'));
+  } else {
+    rows.push(capRow('red','Speaker names', esc(sn.reason||'unavailable'), sn.fix||''));
+  }
+  // Offline MoM (optional → yellow when missing, never blocks)
+  const om = cap.offline_mom || {};
+  if(om.ok){
+    rows.push(capRow('green','Offline MoM', esc(om.reason||'ready')));
+  } else {
+    rows.push(capRow('yellow','Offline MoM', esc(om.reason||'unavailable'), om.fix||'', true));
+  }
+  card.innerHTML = '<div class="cap-title">Before you run — what this Mac can do</div>' + rows.join('');
 }
 
 // Generate is enabled when there's either a picked file or a typed path.
@@ -1775,13 +1919,26 @@ function setIndet(on){ const f=$('#progFill'); f.classList.toggle('indet',on); i
 function setProgress(pct){ setIndet(false); $('#progFill').style.width=Math.round(pct*100)+'%'; }
 function setPhase(t){ curPhase=t; $('#phaseLabel').textContent=t; }
 
+// Best-effort audio/video guess so we can explain a skipped naming step (D2).
+function guessIsVideo(name){
+  name = (name||'').toLowerCase();
+  if(VIDEO_RE.test(name)) return true;
+  if(AUDIO_ONLY_RE.test(name)) return false;
+  return true; // unknown → assume video (URL fetches, odd extensions)
+}
+
 function beginRun(phase){
   $('#go').disabled = true; $('#fetchBtn').disabled = true;
   $('#resultCard').classList.add('hidden');
   $('#speakerPanel').classList.add('hidden');
   $('#progCard').classList.remove('hidden');
   $('#log').textContent = '';
-  document.querySelectorAll('.step').forEach(s=>{ s.className='step'; const ic=s.querySelector('.ic'); if(ic) ic.textContent=ic.dataset.n||ic.textContent; });
+  // reset all four steps to pending
+  document.querySelectorAll('.step').forEach(s=>{ s.className='step'; setStepIcon(s,'pending'); setStepReason(s,''); });
+  namesReason = ''; coverageInfo = null;
+  wantMom = modelFor() !== 'none';
+  isVideoInput = guessIsVideo((chosenFile && chosenFile.name) || $('#path').value || $('#url').value);
+  if(!wantMom) setStep('mom','skipped','Not requested — transcript only');
   $('#progFill').style.width='0'; setIndet(true); setPhase(phase); startTimer();
   momText = ""; styledHtml = ""; currentOutdir=""; $('#mom').innerHTML = '';
   window.scrollTo({top: $('#progCard').offsetTop-20, behavior:'smooth'});
@@ -1831,34 +1988,74 @@ $('#fetchBtn').onclick = async () => {
   listen(d.job);
 };
 
+// ---- D2: 4-step pipeline stepper (pending / active / done / skipped / error) ----
+const STEP_ORDER = ['audio','transcribe','names','mom'];
 function setStepIcon(el, state){
   const ic = el.querySelector('.ic'); if(!ic) return;
-  ic.innerHTML = state==='done' ? '<svg style="width:13px;height:13px" aria-hidden="true"><use href="#i-check"/></svg>' : (ic.dataset.n||'');
+  if(state==='done')       ic.innerHTML = '<svg style="width:13px;height:13px" aria-hidden="true"><use href="#i-check"/></svg>';
+  else if(state==='skipped') ic.innerHTML = '<svg style="width:13px;height:13px" aria-hidden="true"><use href="#i-ban"/></svg>';
+  else if(state==='error') ic.innerHTML = '<svg style="width:13px;height:13px" aria-hidden="true"><use href="#i-x"/></svg>';
+  else ic.innerHTML = ic.dataset.n || '';
 }
-function setStep(k, state){
-  const order=['audio','transcribe','names'];
-  const el=document.querySelector('.step[data-k="'+k+'"]'); if(!el) return;
-  el.className='step '+state; setStepIcon(el, state);
-  if(state==='active'){ // mark earlier as done
-    order.slice(0, order.indexOf(k)).forEach(p=>{
-      const e=document.querySelector('.step[data-k="'+p+'"]'); if(e){ e.className='step done'; setStepIcon(e,'done'); }
+function setStepReason(el, reason){
+  const r = el.querySelector('.step-reason'); if(!r) return;
+  r.textContent = reason || ''; el.title = reason || '';
+}
+function setStep(k, state, reason){
+  const el = document.querySelector('.step[data-k="'+k+'"]'); if(!el) return;
+  el.className = 'step' + (state && state!=='pending' ? ' '+state : '');
+  setStepIcon(el, state); setStepReason(el, reason);
+  if(state==='active' || state==='done'){ // earlier pending/active steps have now finished
+    STEP_ORDER.slice(0, STEP_ORDER.indexOf(k)).forEach(p=>{
+      const e = document.querySelector('.step[data-k="'+p+'"]');
+      if(e && (e.className==='step' || e.className==='step active')){ e.className='step done'; setStepIcon(e,'done'); }
     });
   }
 }
+function stepState(k){
+  const el = document.querySelector('.step[data-k="'+k+'"]'); if(!el) return 'pending';
+  return el.className.replace('step','').trim() || 'pending';
+}
 function logLine(t){ const l=$('#log'); l.textContent += t+'\n'; l.scrollTop=l.scrollHeight; }
+
+// Parse Phase-1/2 backend log lines into distinct step states (D2).
+function parseLogForSteps(line){
+  const clean = line.replace(/^[⚠🗣️⚙\s]+/,'').trim();
+  let m;
+  if((m = /Speaker naming skipped:\s*(.+)/i.exec(line))){
+    namesReason = trimReason(m[1]); setStep('names','skipped', namesReason);
+  } else if(/Speaker naming (failed to run|exited with code|produced no output)|Could not parse speaker-naming output/i.test(line)){
+    namesReason = trimReason(clean); setStep('names','error', namesReason);
+  } else if(/matched 0 on-screen names/i.test(line)){
+    namesReason = 'OCR ran but matched 0 on-screen names'; setStep('names','skipped', namesReason);
+  } else if(/Ollama unavailable\s*[—-]\s*skipping the local MoM/i.test(line)){
+    setStep('mom','skipped','Ollama unavailable — transcript ready for Gemini');
+  }
+}
+function trimReason(s){ s=(s||'').trim(); return s.length>90 ? s.slice(0,88)+'…' : s; }
 
 function listen(job){
   const es = new EventSource('/events?job='+job);
   es.onmessage = e => {
     const d = JSON.parse(e.data);
-    if(d.type==='stage'){ setStep(d.stage,'active'); logLine('▶ '+d.msg); setPhase(d.msg); setIndet(true); }
-    else if(d.type==='progress'){ setProgress(d.pct); $('#phaseLabel').textContent = curPhase+' '+Math.round(d.pct*100)+'%'; }
-    else if(d.type==='log'){ logLine(d.line); }
+    if(d.type==='stage'){
+      if(d.stage==='mom'){ setStep('mom','active','running'); }
+      else if(d.stage!=='download'){ setStep(d.stage,'active'); }
+      logLine('▶ '+d.msg); setPhase(d.msg); setIndet(true);
+    }
+    else if(d.type==='progress'){
+      setProgress(d.pct);
+      const pctTxt = Math.round(d.pct*100)+'%';
+      $('#phaseLabel').textContent = curPhase+' '+pctTxt;
+      if(d.stage) setStep(d.stage,'active', pctTxt);
+    }
+    else if(d.type==='coverage'){ coverageInfo = {pct:d.pct, named:d.named, total:d.total}; }
+    else if(d.type==='log'){ logLine(d.line); parseLogForSteps(d.line); }
     else if(d.type==='transcript'){ transcriptText = d.text; $('#rawTranscript').textContent = d.text; }
-    else if(d.type==='partial'){ momText += d.text; $('#resultCard').classList.remove('hidden'); $('#mom').innerHTML = renderMd(momText); }
+    else if(d.type==='partial'){ setStep('mom','active','running'); momText += d.text; $('#resultCard').classList.remove('hidden'); $('#mom').innerHTML = renderMd(momText); }
     else if(d.type==='done'){
       es.close(); stopTimer(); setIndet(false); $('#progFill').style.width='100%'; $('#phaseLabel').textContent='Done';
-      ['audio','transcribe','names'].forEach(k=>setStep(k,'done'));
+      finalizeSteps(d);
       renderResult(d);
       localStorage.removeItem('momJob'); loadRecent();
       $('#go').disabled=false; $('#fetchBtn').disabled=false;
@@ -1866,31 +2063,91 @@ function listen(job){
     }
     else if(d.type==='error'){
       es.close(); stopTimer(); setIndet(false); $('#phaseLabel').textContent='Error';
+      // Mark whichever step was mid-flight as errored.
+      const act = STEP_ORDER.find(k=>stepState(k)==='active');
+      if(act) setStep(act,'error', trimReason(d.error));
       logLine('ERROR: '+d.error);
-      $('#banner').className='banner warn'; $('#banner').innerHTML=icon('alert-triangle')+' '+d.error;
+      $('#banner').className='banner warn'; $('#banner').innerHTML=icon('alert-triangle')+' '+esc(d.error);
       $('#go').disabled=false; $('#fetchBtn').disabled=false;
     }
   };
   es.onerror = () => { es.close(); };
 }
 
+// Resolve every step to a terminal state on completion (D2).
+function finalizeSteps(d){
+  setStep('audio','done'); setStep('transcribe','done');
+  const hasNames = d.speakers && d.speakers.length;
+  // Name speakers
+  if(hasNames){ setStep('names','done', coverageInfo ? Math.round(coverageInfo.pct*100)+'% named' : ''); }
+  else if(stepState('names')==='pending'){
+    const reason = namesReason || (isVideoInput ? 'No on-screen names detected'
+                                                 : 'Audio-only file — on-screen names are video-only');
+    if(!isVideoInput && !namesReason) namesReason = reason;
+    setStep('names','skipped', reason);
+  }
+  // MoM
+  if(d.markdown){ setStep('mom','done'); }
+  else if(stepState('mom')!=='skipped'){
+    setStep('mom','skipped', wantMom ? 'Ollama unavailable — transcript ready for Gemini'
+                                     : 'Not requested — transcript only');
+  }
+}
+
 function icon(n){ return '<svg class="ic"><use href="#i-'+n+'"/></svg>'; }
 // innerHTML-based so buttons keep their SVG icon after a flash message.
 function flash(sel,msg){ const b=$(sel); const o=b.dataset.html||(b.dataset.html=b.innerHTML); b.innerHTML=msg; setTimeout(()=>b.innerHTML=o,1600); }
 
-function renderSpeakerPanel(speakers, map, roster){
+// ---- D3: speaker correction panel (counts + coverage + rename/merge + re-run) ----
+function coverageBlock(){
+  if(!coverageInfo) return '';
+  const pct = Math.round(coverageInfo.pct*100);
+  const low = pct < 40;
+  return '<div class="coverage'+(low?' low':'')+'">'+
+         '<span>Coverage <strong>'+pct+'%</strong> — '+coverageInfo.named+' of '+coverageInfo.total+' segments named</span>'+
+         '<span class="cov-bar"><span class="cov-fill" style="width:'+pct+'%"></span></span></div>';
+}
+function speakerReason(){
+  // Prefer the concrete run reason; fall back to the D1 capability reason.
+  if(namesReason) return {reason: namesReason, fix: ''};
+  const sn = healthCap && healthCap.speaker_names;
+  if(sn && !sn.ok) return {reason: sn.reason, fix: sn.fix||''};
+  if(!isVideoInput) return {reason:'This is an audio-only file — on-screen speaker names need a video.', fix:''};
+  return {reason:'No on-screen speaker names were detected in this recording.', fix:''};
+}
+function renderSpeakerEmpty(){
+  const p = $('#speakerPanel'); p.classList.remove('hidden');
+  const r = speakerReason();
+  p.innerHTML = '<h4>'+icon('users')+' Speaker names</h4>'+
+    '<div class="sp-empty"><svg class="ic"><use href="#i-alert-triangle"/></svg>'+
+    '<div class="sp-empty-body">Names weren\'t applied to this transcript. '+
+    '<span class="sp-empty-reason">'+esc(r.reason)+'</span>'+
+    (r.fix ? '<span class="sp-empty-fix">Fix: '+esc(r.fix)+'</span>' : '')+
+    (coverageInfo ? '<div style="margin-top:8px">'+coverageBlock().replace('class="coverage','class="coverage low')+'</div>' : '')+
+    '</div></div>';
+}
+function renderSpeakerPanel(speakers, map, roster, counts){
   const p = $('#speakerPanel'); p.classList.remove('hidden');
   const esc2 = s => (s||'').replace(/"/g,'&quot;');
   const opts = (roster||[]).map(n=>'<option value="'+esc2(n)+'">').join('');
-  const rows = speakers.map(s=>
-    '<div class="sp-row"><span class="lab">'+s+'</span>'+
-    '<input data-spk="'+s+'" value="'+esc2(map[s]||'')+'" list="rosterList" '+
-    'placeholder="name (blank = keep '+s+')"></div>').join('');
+  counts = counts || {};
+  const rows = speakers.map(s=>{
+    const c = counts[s];
+    const badge = (c!=null) ? '<span class="sp-count">'+c+' frame'+(c===1?'':'s')+'</span>' : '';
+    return '<div class="sp-row"><span class="lab">'+esc(s)+badge+'</span>'+
+      '<input data-spk="'+esc2(s)+'" value="'+esc2(map[s]||'')+'" list="rosterList" '+
+      'placeholder="rename or merge (blank = keep '+esc2(s)+')"></div>';
+  }).join('');
   p.innerHTML = '<h4>'+icon('users')+' Review speaker names</h4>'+
-    '<span class="sp-sub">Read from the video — fix any that look wrong (autocompletes from your attendees), then apply.</span>'+
+    '<span class="sp-sub">Read from the video. Fix any that look wrong, or type the same name on two rows to merge them (autocompletes from your attendees), then apply.</span>'+
+    coverageBlock()+
     rows + '<datalist id="rosterList">'+opts+'</datalist>'+
-    '<button class="primary" id="regenBtn" style="margin-top:12px">'+icon('check')+' Apply names &amp; update</button>';
+    '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">'+
+      '<button class="primary" id="regenBtn">'+icon('check')+' Apply names &amp; update transcript</button>'+
+      '<button class="ghost hidden" id="rerunMomBtn">'+icon('sparkles')+' Re-run MoM with corrected names</button>'+
+    '</div>';
   $('#regenBtn').onclick = regen;
+  $('#rerunMomBtn').onclick = rerunMom;
 }
 async function regen(){
   const mapping = {};
@@ -1901,12 +2158,24 @@ async function regen(){
     const d = await r.json();
     if(d.error){ alert(d.error); }
     else {
+      // Re-render the transcript in place (no full re-run).
       if(d.transcript){ transcriptText = d.transcript; $('#rawTranscript').textContent = d.transcript; }
       if(d.markdown){ momText = d.markdown; $('#mom').innerHTML = renderMd(momText); }
       flash('#regenBtn','Updated');
+      // Offer a MoM re-draft if one already exists (styled or markdown).
+      if(styledHtml || momText){ const rb=$('#rerunMomBtn'); if(rb) rb.classList.remove('hidden'); }
     }
   } catch(e){ alert('update failed'); }
   btn.innerHTML=orig; btn.disabled=false;
+}
+// Re-draft the MoM from the corrected transcript. Styled path regenerates the
+// offline email; the Gemini path just re-copies the (now-updated) prompt.
+async function rerunMom(){
+  if(styledHtml){ $('#styledBtn').click(); return; }
+  if(momText){ // markdown MoM was already refreshed by /rename; nudge the user
+    flash('#rerunMomBtn','MoM updated with corrected names'); return;
+  }
+  $('#copyPromptBtn').click();
 }
 
 $('#copyBtn').onclick = () => navigator.clipboard.writeText(momText).then(()=>flash('#copyBtn','Copied!'));
@@ -1928,7 +2197,6 @@ $('#dlTxtBtn').onclick = () => {
 };
 
 // One-click Gemini flow: copies the styling prompt with this transcript embedded.
-// Paste into Gemini, attach your screenshots → same styled MoM email every time.
 $('#copyPromptBtn').onclick = async () => {
   if(!transcriptText){ flash('#copyPromptBtn','No transcript yet'); return; }
   try {
@@ -1977,7 +2245,6 @@ $('#styledBtn').onclick = async () => {
 };
 
 $('#copyRichBtn').onclick = async () => {
-  // Prefer the deterministic styled email if we generated one; else render markdown.
   const html = styledHtml
     ? styledHtml
     : '<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#111;line-height:1.55">'
@@ -1998,7 +2265,6 @@ $('#copyRichBtn').onclick = async () => {
     })]);
     flash('#copyRichBtn','Copied — paste into Gmail');
   } catch(e){
-    // Fallback for browsers without ClipboardItem: select rendered HTML + execCommand.
     const tmp=document.createElement('div'); tmp.innerHTML=html;
     tmp.style.cssText='position:fixed;left:-9999px;top:0'; document.body.appendChild(tmp);
     const sel=getSelection(), r=document.createRange(); r.selectNodeContents(tmp);
@@ -2010,8 +2276,7 @@ $('#copyRichBtn').onclick = async () => {
 };
 
 // --- tiny markdown renderer (headings, bold, code, lists, tables) ---
-// Pass a styles map (EMAIL_STYLES) to emit inline styles; omit for on-page CSS.
-function esc(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function esc(s){ return (s==null?'':String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 function st(S,tag){ return (S && S[tag]) ? (' style="'+S[tag]+'"') : ''; }
 function inline(s,S){ return esc(s).replace(/\*\*(.+?)\*\*/g,'<b>$1</b>').replace(/`(.+?)`/g,'<code'+st(S,'code')+'>$1</code>'); }
 function renderMd(md,S){
@@ -2043,20 +2308,26 @@ function renderResult(d){
   if(d.transcript) transcriptText = d.transcript;
   $('#mom').innerHTML = momText ? renderMd(momText) : '';
   $('#resultCard').classList.remove('hidden');
-  // The fork is available whenever there's a transcript to work from.
   $('#routeCards').classList.toggle('hidden', !transcriptText);
-  // MoM actions + preview header appear only once a MoM actually exists.
   $('#momActions').classList.toggle('hidden', !momText);
   $('#momHead').classList.toggle('hidden', !momText);
   if(d.transcript) $('#rawTranscript').textContent = d.transcript;
   currentOutdir = d.outdir || '';
+  // coverage may arrive on the done payload (resume) as well as via its event
+  if(d.coverage != null && !coverageInfo) coverageInfo = {pct:d.coverage, named:d.named_count||0, total:d.segment_count||0};
   const sl = $('#savedLoc');
   if(currentOutdir){
     sl.classList.remove('hidden');
-    sl.innerHTML = icon('device-floppy')+' Saved to <code>'+currentOutdir.replace(/^.*\/Documents/,'~/Documents')+'</code>';
+    sl.innerHTML = icon('device-floppy')+' Saved to <code>'+esc(currentOutdir.replace(/^.*\/Documents/,'~/Documents'))+'</code>';
   } else { sl.classList.add('hidden'); }
-  if(d.speakers && d.speakers.length) renderSpeakerPanel(d.speakers, d.speaker_map||{}, d.roster||[]);
-  else $('#speakerPanel').classList.add('hidden');
+  // D3: names panel, or the D1 reason inline when empty / 0% coverage.
+  const hasNames = d.speakers && d.speakers.length;
+  const zeroCov = coverageInfo && coverageInfo.pct === 0;
+  if(hasNames && !zeroCov){
+    renderSpeakerPanel(d.speakers, d.speaker_map||{}, d.roster||[], d.roster_counts||{});
+  } else {
+    renderSpeakerEmpty();
+  }
 }
 
 // Open the output folder in Finder (local server can do this safely).
@@ -2087,6 +2358,7 @@ $('#recent').onchange = async () => {
     const d = await (await fetch('/result_file?dir='+encodeURIComponent(dir))).json();
     if(d.error){ alert(d.error); return; }
     $('#progCard').classList.add('hidden');
+    coverageInfo = null; namesReason = '';
     renderResult(d);
     window.scrollTo({top: $('#resultCard').offsetTop-20, behavior:'smooth'});
   } catch(e){ alert('Could not open that result.'); }
@@ -2101,7 +2373,7 @@ async function tryResume(){
   else if(d.status==='queued' || d.status==='running'){
     $('#progCard').classList.remove('hidden'); setIndet(true); setPhase('Resuming…'); startTimer();
     $('#go').disabled=true; $('#fetchBtn').disabled=true; listen(id);
-  } else { localStorage.removeItem('momJob'); }  // error/unknown
+  } else { localStorage.removeItem('momJob'); }
 }
 
 loadHealth();
