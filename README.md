@@ -4,6 +4,8 @@
 
 <br>
 
+[![Download](https://img.shields.io/badge/%E2%AC%87%EF%B8%8F%20Download-latest-D81E2C?style=for-the-badge)](https://github.com/sudockin/MoM-Greek-Generator/releases/latest)
+
 ![Platform](https://img.shields.io/badge/platform-macOS%20Apple%20Silicon-111111)
 ![Privacy](https://img.shields.io/badge/privacy-100%25%20on--device-2ea44f)
 ![API keys](https://img.shields.io/badge/API%20keys-none-1d4ed8)
@@ -19,6 +21,20 @@
 <sub>The guided flow: ① choose a recording → ② add attendees & context → ③ Generate.</sub>
 
 </div>
+
+---
+
+## ⬇️ Download & run (2 minutes, no terminal)
+
+**[⬇️ Download the latest version (.zip)](https://github.com/sudockin/MoM-Greek-Generator/archive/refs/tags/v1.1.zip)**  ·  [all releases & notes](https://github.com/sudockin/MoM-Greek-Generator/releases/latest)
+
+1. **Unzip** the download (double-click it in Finder).
+2. Double-click **`Install MoM Generator.command`** — installs everything (ffmpeg, the Greek speech model, Apple Vision OCR, Ollama). A few GB the first time, then permanent and offline.
+3. Double-click **`Start MoM Generator.command`** — your browser opens the app.
+
+> First launch, if macOS says *"unidentified developer"*: right-click the file → **Open** → **Open** (once). The installer clears this for you.
+>
+> **Requirements:** an Apple-silicon Mac (M1–M4) and ~15 GB free for the one-time model downloads.
 
 ---
 
