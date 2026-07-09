@@ -65,7 +65,7 @@ def normalize(s):
 
 
 def strip_company_tag(s):
-    """'Maria K. (efood)' -> 'Maria K.' — Meet often appends an org in parentheses."""
+    """'Alex R. (Example Co)' -> 'Alex R.' — Meet often appends an org in parentheses."""
     return re.sub(r"\s*\([^)]*\)\s*$", "", (s or "").strip()).strip()
 
 
@@ -104,9 +104,9 @@ def parse_roster(raw):
 def roster_match(text, roster_pairs):
     """Return the canonical roster name an OCR string corresponds to, or None.
 
-    Fuzzy so OCR slips ('Ganatsios' vs 'Gkanatsios') still match the attendee.
-    Also matches a single on-screen first name ('Maria') against a full roster
-    entry ('Maria Kolovou') by taking the best of the full-string and per-token
+    Fuzzy so OCR slips ('Smyth' vs 'Smith') still match the attendee.
+    Also matches a single on-screen first name ('Alex') against a full roster
+    entry ('Alex Rivera') by taking the best of the full-string and per-token
     ratios — a first name IS a strong signal since it must be an attendee token."""
     cn = normalize(text)
     if not cn:

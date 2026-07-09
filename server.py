@@ -1692,7 +1692,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <div class="step-block">
       <div class="step-head"><span class="step-num">2</span> Meeting context</div>
       <label>Attendees <span class="hint">(recommended — locks speaker-name detection onto these people; comma or line separated)</span></label>
-      <textarea id="attendees" rows="2" placeholder="e.g. Maria Papadopoulou, Nikos Georgiou, Eleni K."></textarea>
+      <textarea id="attendees" rows="2" placeholder="e.g. Alex Rivera, Sam Chen, Jordan Lee"></textarea>
       <div class="row" style="margin-top:16px">
         <div>
           <label>Spoken language</label>

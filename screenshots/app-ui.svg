@@ -68,7 +68,7 @@
 
     <text x="32" y="424" font-size="13.5"><tspan font-weight="700" fill="#374151">Attendees</tspan><tspan fill="#8A93A2"> (recommended — locks speaker-name detection onto these people; comma or line separated)</tspan></text>
     <rect x="32" y="436" width="756" height="60" rx="10" fill="#FFFFFF" stroke="#D8DCE3"/>
-    <text class="ph" x="52" y="466">e.g. Maria Papadopoulou, Nikos Georgiou, Eleni K.</text>
+    <text class="ph" x="52" y="466">e.g. Alex Rivera, Sam Chen, Jordan Lee</text>
 
     <text class="fld" x="32" y="536">Spoken language</text>
     <rect x="32" y="548" width="180" height="44" rx="9" fill="#FFFFFF" stroke="#D8DCE3"/>

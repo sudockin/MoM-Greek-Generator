@@ -4,6 +4,8 @@
 Runs with the stdlib only — no models, no macOS Vision, no network:
 
     python3 test_speaker_naming.py
+
+All person names below are generic placeholders, not real people.
 """
 import os
 import tempfile
@@ -15,11 +17,11 @@ import server
 
 class IsPersonName(unittest.TestCase):
     def test_two_and_three_token_names(self):
-        self.assertTrue(ocr.is_person_name("Maria Kolovou"))
-        self.assertTrue(ocr.is_person_name("Anna Maria Papadopoulou"))
+        self.assertTrue(ocr.is_person_name("Alex Rivera"))
+        self.assertTrue(ocr.is_person_name("Alex Jordan Rivera"))
 
     def test_greek_caps(self):
-        self.assertTrue(ocr.is_person_name("Μαρία Κολοβού"))
+        self.assertTrue(ocr.is_person_name("Άλφα Βήτα"))
 
     def test_rejects_digits_and_punctuation(self):
         self.assertFalse(ocr.is_person_name("Room 2 Notes"))
@@ -32,26 +34,26 @@ class IsPersonName(unittest.TestCase):
 
     def test_single_token_gated_by_allow_single(self):
         # A lone first name is rejected by default (no roster to vouch for it)...
-        self.assertFalse(ocr.is_person_name("Maria"))
+        self.assertFalse(ocr.is_person_name("Alex"))
         # ...but accepted when the caller opts in (roster present).
-        self.assertTrue(ocr.is_person_name("Maria", allow_single=True))
+        self.assertTrue(ocr.is_person_name("Alex", allow_single=True))
 
     def test_company_tag_stripped(self):
-        self.assertEqual(ocr.strip_company_tag("Maria K. (efood)"), "Maria K.")
-        self.assertTrue(ocr.is_person_name("Maria Kolovou (Delivery Hero)"))
-        self.assertTrue(ocr.is_person_name("Maria (efood)", allow_single=True))
+        self.assertEqual(ocr.strip_company_tag("Alex R. (Example Co)"), "Alex R.")
+        self.assertTrue(ocr.is_person_name("Alex Rivera (Example Co)"))
+        self.assertTrue(ocr.is_person_name("Alex (Example Co)", allow_single=True))
 
 
 class NameFromResults(unittest.TestCase):
     """bbox = [x, y, w, h], normalized, origin bottom-left; result = (text, conf, bbox)."""
 
     def test_single_first_name_matches_with_roster(self):
-        roster = ocr.parse_roster("Maria Kolovou, Nikos Papas")
-        results = [("Maria", 0.95, (0.80, 0.05, 0.1, 0.02))]
-        self.assertEqual(ocr.name_from_results(results, roster), "Maria Kolovou")
+        roster = ocr.parse_roster("Alex Rivera, Sam Chen")
+        results = [("Alex", 0.95, (0.80, 0.05, 0.1, 0.02))]
+        self.assertEqual(ocr.name_from_results(results, roster), "Alex Rivera")
 
     def test_single_first_name_rejected_without_roster(self):
-        results = [("Maria", 0.95, (0.80, 0.05, 0.1, 0.02))]
+        results = [("Alex", 0.95, (0.80, 0.05, 0.1, 0.02))]
         self.assertIsNone(ocr.name_from_results(results, None))
 
     def test_no_new_false_positive_without_roster(self):
@@ -62,7 +64,7 @@ class NameFromResults(unittest.TestCase):
 
 class ModelDiscovery(unittest.TestCase):
     def test_whispercpp_dir_has_no_personal_path(self):
-        # The old hardcoded /Users/pj/... default must be gone.
+        # The old hardcoded /Users/<name>/... default must be gone.
         self.assertNotIn("/Users/pj", server.WHISPERCPP_DIR)
 
     def test_env_var_wins(self):
@@ -100,7 +102,7 @@ class OverwriteGuard(unittest.TestCase):
         self.assertFalse(self.should_overwrite("word word word", []))
 
     def test_named_run_overwrites(self):
-        self.assertTrue(self.should_overwrite("Maria: hello", ["Maria"]))
+        self.assertTrue(self.should_overwrite("Alex: hello", ["Alex"]))
 
     def test_empty_named_never_overwrites(self):
         self.assertFalse(self.should_overwrite("", []))

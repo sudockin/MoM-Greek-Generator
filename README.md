@@ -26,7 +26,7 @@
 
 ## ⬇️ Download & run (2 minutes, no terminal)
 
-**[⬇️ Download the latest version (.zip)](https://github.com/sudockin/MoM-Greek-Generator/archive/refs/tags/v1.1.zip)**  ·  [all releases & notes](https://github.com/sudockin/MoM-Greek-Generator/releases/latest)
+**[⬇️ Download the latest version (.zip)](https://github.com/sudockin/MoM-Greek-Generator/archive/refs/heads/main.zip)**  ·  [all releases & notes](https://github.com/sudockin/MoM-Greek-Generator/releases/latest)
 
 1. **Unzip** the download (double-click it in Finder).
 2. Double-click **`Install MoM Generator.command`** — installs everything (ffmpeg, the Greek speech model, Apple Vision OCR, Ollama). A few GB the first time, then permanent and offline.

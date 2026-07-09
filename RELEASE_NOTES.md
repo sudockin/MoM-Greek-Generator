@@ -14,7 +14,7 @@ v1.0 could quietly produce a **nameless** transcript when on‑screen speaker na
 - **Naming works on the fast (whisper.cpp) path.** OCR needs Apple Vision (`ocrmac`), *not* WhisperX — so it's now decoupled from the WhisperX environment and picks whichever Python has `ocrmac`. A whisper.cpp‑only Mac can label speakers; a Mac missing `ocrmac` gets a one‑line install hint instead of a blank.
 - **Up‑front capability check.** At the start of every job the log states the engine in use, whether **on‑screen names** are possible, and whether **audio diarization** is available — *before* a long transcription runs.
 - **Better transcript kept on a miss.** When OCR matches zero names, the neatly **segmented** transcript is preserved instead of being replaced by one nameless blob.
-- **Catches more names.** Recognises single first‑name tags (e.g. just “Maria”) and `Name (Company)` labels when you supply an attendee list, and the geometry gates are tunable via `MOM_OCR_*` env vars for unusual meeting layouts.
+- **Catches more names.** Recognises single first‑name tags (e.g. just “Alex”) and `Name (Company)` labels when you supply an attendee list, and the geometry gates are tunable via `MOM_OCR_*` env vars for unusual meeting layouts.
 - **Portable install.** Removed a hardcoded developer path; whisper.cpp is now auto‑discovered (env var → Homebrew/`~/.cache` → `PATH`). `setup.sh` installs `ocrmac` on its own so the fast path always gets it.
 - **New:** `python3 server.py --self-check` prints detected engine, `ocrmac` availability and model discovery **without** processing a file. Added unit tests for the pure OCR/discovery logic.
 
