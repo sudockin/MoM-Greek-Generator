@@ -6,8 +6,9 @@ visual.
 
 | File | Version | Notes |
 |---|---|---|
-| `app-ready.png` | current | Landing screen in its ready state (latest release) |
-| `app-v1.1.png` | v1.1 | Archived copy for the v1.1 notes |
+| `app-ui.svg` | current | Self-contained **vector** reproduction of the landing UI — always renders on GitHub, no capture step. Used at the top of the main README. |
+| `app-ready.png` | current | Optional **raster** screengrab of the ready-state landing screen (run `capture.command`) |
+| `app-v1.1.png` | v1.1 | Archived raster copy for the v1.1 notes |
 
 ## Regenerate (repeatable, one command)
 

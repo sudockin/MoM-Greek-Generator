@@ -12,6 +12,12 @@
 
 **Drop in a meeting recording. Get back a transcript that already knows who said what — plus a polished Minutes-of-Meeting email ready to paste into Gmail. Nothing leaves your Mac.**
 
+<br>
+
+<img src="screenshots/app-ui.svg" alt="MoM Generator UI — guided 1-2-3 flow: choose a recording, add meeting context, generate" width="760">
+
+<sub>The guided flow: ① choose a recording → ② add attendees & context → ③ Generate.</sub>
+
 </div>
 
 ---
@@ -31,21 +37,11 @@ Recording a call is easy; turning it into shareable minutes is the slog — espe
 - 🔒 **Private by construction.** Audio, transcript, and minutes never leave the laptop. The only network access is the one-time setup download.
 - 🖥️ **No terminal required.** Two double-clicks: install, then run. Opens in your browser.
 
-<!--
-  App screenshot: run  ./screenshots/capture.command  to generate screenshots/app-ready.png,
-  then uncomment the block below (kept commented so the README never shows a broken image).
-
-<div align="center">
-<br>
-<img src="screenshots/app-ready.png" alt="MoM Generator app — guided 1-2-3 flow" width="720">
-<br>
-<sub>The guided flow: choose a recording → add attendees → Generate.</sub>
-</div>
--->
-
-> **📸 See it in action:** run [`./screenshots/capture.command`](screenshots/) to render the
-> live app UI (headless Chrome) into `screenshots/app-ready.png`, then uncomment the image
-> block near the top of this README. Regenerated each release.
+> **📸 The screenshot above** is a self-contained vector reproduction of the live UI
+> ([`screenshots/app-ui.svg`](screenshots/app-ui.svg)) — it always renders on GitHub, no
+> capture step needed. Prefer a real raster screengrab? Run
+> [`./screenshots/capture.command`](screenshots/) to save `screenshots/app-ready.png` and
+> swap it in. Refreshed each release.
 
 ---
 

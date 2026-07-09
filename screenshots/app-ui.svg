@@ -1,0 +1,91 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 968" width="900" height="968" role="img" aria-label="MoM Generator UI — guided 1-2-3 flow: choose a recording, add meeting context, generate">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FB4A57"/><stop offset="1" stop-color="#D81E2C"/>
+    </linearGradient>
+    <filter id="shadow" x="-8%" y="-8%" width="116%" height="116%">
+      <feDropShadow dx="0" dy="6" stdDeviation="14" flood-color="#1B2A4A" flood-opacity="0.08"/>
+    </filter>
+  </defs>
+
+  <style>
+    text { font-family: system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
+    .h1 { font-size: 30px; font-weight: 800; fill: #17181D; letter-spacing: -0.4px; }
+    .sub { font-size: 14px; fill: #6B7280; }
+    .lbl { font-size: 17px; font-weight: 700; fill: #17181D; }
+    .fld { font-size: 13.5px; font-weight: 700; fill: #374151; }
+    .ph  { font-size: 14px; fill: #9AA1AC; }
+    .mut { font-size: 12.5px; fill: #9AA1AC; }
+    .num { font-size: 13px; font-weight: 700; fill: #FFFFFF; }
+  </style>
+
+  <!-- page -->
+  <rect width="900" height="968" fill="#F3F5F9"/>
+
+  <!-- header -->
+  <g transform="translate(40,36)">
+    <rect width="56" height="56" rx="14" fill="url(#tile)"/>
+    <g transform="translate(17,15)">
+      <rect width="24" height="30" rx="4" fill="#FFFFFF"/>
+      <line x1="5" y1="9"  x2="19" y2="9"  stroke="#FB4A57" stroke-width="2.4" stroke-linecap="round"/>
+      <line x1="5" y1="15" x2="19" y2="15" stroke="#FB4A57" stroke-width="2.4" stroke-linecap="round"/>
+      <line x1="5" y1="21" x2="14" y2="21" stroke="#FB4A57" stroke-width="2.4" stroke-linecap="round"/>
+    </g>
+    <text class="h1" x="74" y="27">MoM Generator</text>
+    <text class="sub" x="75" y="49">Meeting recording → speaker-labelled transcript → styled Minutes-of-Meeting · on-device, 100% local</text>
+  </g>
+
+  <!-- ready banner -->
+  <g transform="translate(40,120)">
+    <rect width="820" height="66" rx="10" fill="#ECFDF3" stroke="#BBF7D0"/>
+    <text x="24" y="30" font-size="14.5" font-weight="600" fill="#15803D">✓ Ready. Add a recording, then Generate — you’ll get a speaker-labelled transcript.</text>
+    <text x="24" y="50" font-size="12.5" fill="#4B7A5A">Engine: whisper.cpp (ggml-large-v3-turbo-q5_0.bin) · ⚡ Metal GPU · 🗣️ speaker names from Google Meet (OCR)</text>
+  </g>
+
+  <!-- main card -->
+  <g transform="translate(40,206)">
+    <rect width="820" height="726" rx="16" fill="#FFFFFF" stroke="#E7E9EE" filter="url(#shadow)"/>
+
+    <!-- Step 1 -->
+    <circle cx="46" cy="52" r="13" fill="#E11D2A"/>
+    <text class="num" x="46" y="57" text-anchor="middle">1</text>
+    <text class="lbl" x="70" y="58">Choose a recording</text>
+
+    <rect x="32" y="80" width="756" height="46" rx="10" fill="#FFFFFF" stroke="#D8DCE3"/>
+    <text class="ph" x="52" y="108">Paste a file path on this Mac — e.g. ~/Downloads/meeting.mp4</text>
+
+    <text class="mut" x="410" y="156" text-anchor="middle">— OR —</text>
+
+    <rect x="32" y="174" width="756" height="150" rx="12" fill="#FBFCFE" stroke="#C9D2DE" stroke-width="1.5" stroke-dasharray="6 5"/>
+    <text x="410" y="228" text-anchor="middle" font-size="26">🎙️</text>
+    <text x="410" y="264" text-anchor="middle" font-size="15.5" fill="#374151">Drag a recording here, or <tspan fill="#1D4ED8" text-decoration="underline">click to choose a file</tspan></text>
+    <text class="mut" x="410" y="290" text-anchor="middle">.mp4 · .mov · .m4a · .mp3 · .wav · .aac — audio or video</text>
+
+    <!-- Step 2 -->
+    <circle cx="46" cy="384" r="13" fill="#E11D2A"/>
+    <text class="num" x="46" y="389" text-anchor="middle">2</text>
+    <text class="lbl" x="70" y="390">Meeting context</text>
+
+    <text x="32" y="424" font-size="13.5"><tspan font-weight="700" fill="#374151">Attendees</tspan><tspan fill="#8A93A2"> (recommended — locks speaker-name detection onto these people; comma or line separated)</tspan></text>
+    <rect x="32" y="436" width="756" height="60" rx="10" fill="#FFFFFF" stroke="#D8DCE3"/>
+    <text class="ph" x="52" y="466">e.g. Maria Papadopoulou, Nikos Georgiou, Eleni K.</text>
+
+    <text class="fld" x="32" y="536">Spoken language</text>
+    <rect x="32" y="548" width="180" height="44" rx="9" fill="#FFFFFF" stroke="#D8DCE3"/>
+    <text x="52" y="576" font-size="14.5" fill="#374151">Greek</text>
+    <path d="M182 566 l7 8 l7 -8" fill="none" stroke="#9AA1AC" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+
+    <text class="fld" x="248" y="536">Draft an English MoM now <tspan fill="#9AA1AC" font-weight="400">(optional)</tspan></text>
+    <rect x="248" y="558" width="20" height="20" rx="5" fill="#FFFFFF" stroke="#C2C8D2" stroke-width="1.6"/>
+    <text x="280" y="574" font-size="14.5" fill="#374151">also draft it locally</text>
+
+    <!-- Step 3 -->
+    <circle cx="46" cy="636" r="13" fill="#E11D2A"/>
+    <text class="num" x="46" y="641" text-anchor="middle">3</text>
+    <text class="lbl" x="70" y="642">Generate</text>
+
+    <rect x="32" y="664" width="184" height="46" rx="10" fill="#E6E8EC"/>
+    <text x="124" y="692" text-anchor="middle" font-size="14.5" font-weight="600" fill="#9AA1AC">Generate transcript</text>
+    <text class="mut" x="232" y="692">Choose a recording or paste a file path first.</text>
+  </g>
+</svg>
