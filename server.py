@@ -76,8 +76,30 @@ WHISPERX_MODEL = os.environ.get("WHISPERX_MODEL", "large-v3")
 # Fast Greek transcription on Apple Silicon: whisper.cpp runs large-v3 on the
 # Metal GPU (~10x faster than WhisperX's CPU-only int8). We prefer a large/turbo
 # ggml model when present; small/base fall back to WhisperX (better Greek).
-WHISPERCPP_DIR = os.environ.get(
-    "WHISPERCPP_DIR", "/Users/pj/.gemini/antigravity/scratch/whisper.cpp")
+def find_whispercpp_dir():
+    """Locate a whisper.cpp checkout/install for its bundled `main` binary and
+    `models/` dir. Discovery order: WHISPERCPP_DIR env var → common Homebrew/cache
+    locations → the directory of a whisper-cli/whisper-cpp on PATH. Returns "" if
+    none is found (never a user-specific absolute path)."""
+    env = os.environ.get("WHISPERCPP_DIR")
+    if env:
+        return os.path.expanduser(env)
+    for c in [
+        os.path.expanduser("~/.cache/whisper-cpp"),
+        os.path.expanduser("~/whisper.cpp"),
+        "/opt/homebrew/share/whisper-cpp",
+        "/usr/local/share/whisper-cpp",
+        "/opt/homebrew/opt/whisper-cpp",
+    ]:
+        if os.path.isdir(c):
+            return c
+    cli = shutil.which("whisper-cli") or shutil.which("whisper-cpp") or shutil.which("main")
+    if cli:
+        return os.path.dirname(os.path.realpath(cli))
+    return ""
+
+
+WHISPERCPP_DIR = find_whispercpp_dir()
 # Models that are "high quality" enough to beat WhisperX-on-CPU for Greek.
 HQ_CPP_MODEL_RE = re.compile(r"(large|turbo|medium)", re.I)
 # pyannote.audio 4.x routes diarization through the self-contained community-1
@@ -181,7 +203,7 @@ def find_whisper_cpp_bin():
     cpp_bins = [
         shutil.which("whisper-cli"),
         shutil.which("whisper-cpp"),
-        os.path.join(WHISPERCPP_DIR, "main"),
+        os.path.join(WHISPERCPP_DIR, "main") if WHISPERCPP_DIR else None,
         shutil.which("main"),
         "/opt/homebrew/bin/whisper-cli",
         "/usr/local/bin/whisper-cli",
@@ -408,6 +430,19 @@ def run_pipeline(jid, src_path, language, model, attendees="", from_url=False):
         os.makedirs(outdir, exist_ok=True)
         job["outdir"] = outdir
 
+        # ---- Preflight: tell the user up-front what's possible for THIS run ----
+        # (engine, whether on-screen speaker naming can run, whether audio-only
+        # diarization is available) — before a long transcription starts.
+        wtype = tools["whisper"]["type"]
+        engine = {"cpp": "whisper.cpp", "whisperx": "WhisperX", "openai": "openai-whisper"}.get(wtype, wtype)
+        if wtype == "cpp":
+            engine += f" ({os.path.basename(tools['whisper']['model'])})"
+        ocr_py, ocr_reason = ocrmac_python()
+        ocr_cap = "✅ yes" if ocr_py else f"❌ no — {ocr_reason}"
+        diar_cap = "✅ yes" if (wtype == "whisperx" and hf_token()) else "❌ no (video uses OCR names; audio-only needs WhisperX + HF token)"
+        emit(jid, {"type": "log", "line": f"⚙ Capabilities — engine: {engine} · "
+                   f"on-screen speaker names (OCR): {ocr_cap} · audio diarization: {diar_cap}"})
+
         # ---- Step 0: download from URL (YouTube etc.) ----
         if from_url:
             if not (HAS_YOUTUBE and youtube_dl.available()):
@@ -460,8 +495,11 @@ def run_pipeline(jid, src_path, language, model, attendees="", from_url=False):
             emit(jid, {"type": "stage", "stage": "names", "msg": "Reading on-screen speaker names…"})
             named, roster, speakers = ocr_name_transcript(
                 src_path, os.path.join(outdir, "audio.json"), tools["ffmpeg"],
-                jid=jid, roster=attendees)
-            if named:
+                jid=jid, roster=attendees, ocr_python=ocr_py)
+            # Only overwrite the segmented transcript when names were ACTUALLY
+            # applied (speakers non-empty). A zero-name OCR run returns the
+            # space-joined nameless fallback — keep the original segmentation.
+            if named and speakers:
                 transcript = named
                 with open(transcript_path, "w", encoding="utf-8") as f:
                     f.write(transcript + "\n")
@@ -921,27 +959,84 @@ def apply_speaker_map(transcript, mapping):
     return "\n".join(out)
 
 
-def ocr_name_transcript(video, audio_json, ffmpeg, step=4.0, jid=None, roster=""):
+_OCR_PY_CACHE = {}
+
+
+def ocrmac_python():
+    """Find a Python interpreter that can import `ocrmac` (Apple Vision OCR).
+
+    OCR needs `ocrmac`, NOT WhisperX — so this is decoupled from the WhisperX venv:
+    we probe the WhisperX venv python first (setup.sh installs ocrmac there), then
+    the system python3 / this interpreter. Returns (python_path, reason). On success
+    reason == "ok"; on failure python_path is None and reason is an install hint.
+    Memoized (import loads the Vision framework, ~1 s)."""
+    if "result" in _OCR_PY_CACHE:
+        return _OCR_PY_CACHE["result"]
+    result = (None, "ocrmac not installed in any Python — install with: "
+                    "pip3 install ocrmac  (or re-run ./setup.sh)")
+    tried = []
+    for py in (VENV_PY, shutil.which("python3"), sys.executable):
+        if not py or py in tried or not os.path.exists(py):
+            continue
+        tried.append(py)
+        try:
+            r = subprocess.run([py, "-c", "import ocrmac"],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                               timeout=60)
+        except Exception:
+            continue
+        if r.returncode == 0:
+            result = (py, "ok")
+            break
+    _OCR_PY_CACHE["result"] = result
+    return result
+
+
+def ocr_name_transcript(video, audio_json, ffmpeg, step=4.0, jid=None, roster="",
+                        ocr_python=None):
     """Token-free OCR speaker naming: label each transcript segment by the on-screen
-    active-speaker name. Runs the OCR module in the WhisperX venv (Apple Vision).
+    active-speaker name. Runs the OCR module (ocr_speakers.py) via whichever Python
+    has ocrmac (Apple Vision) — see ocrmac_python().
 
     `roster` is the optional attendee list — passed through to lock OCR onto real
     names (kills doc/UI false positives in Google Meet screen-shares).
 
-    Returns (transcript_text, roster_dict, speakers_list). Streams "OCR i/n" progress."""
-    if not (os.path.exists(VENV_PY) and os.path.exists(OCR_SCRIPT) and os.path.exists(audio_json)):
+    Returns (transcript_text, roster_dict, speakers_list). Every failure/skip mode
+    emits an explicit log line so naming never fails silently; it always degrades
+    gracefully (the caller keeps the segmented transcript). Streams "OCR i/n"."""
+    def log(msg):
+        if jid:
+            emit(jid, {"type": "log", "line": msg})
+
+    # --- explicit, distinct reasons for skipping (never silent) ---
+    if not os.path.exists(OCR_SCRIPT):
+        log(f"⚠ Speaker naming skipped: OCR module missing ({OCR_SCRIPT}).")
         return "", {}, []
-    cmd = [VENV_PY, OCR_SCRIPT, video, audio_json, "--name-transcript", "--step", str(step)]
+    if not os.path.exists(audio_json):
+        log(f"⚠ Speaker naming skipped: timestamped segments missing "
+            f"({os.path.basename(audio_json)}).")
+        return "", {}, []
+    py = ocr_python
+    if not py:
+        py, reason = ocrmac_python()
+        if not py:
+            log(f"⚠ Speaker naming skipped: {reason}")
+            return "", {}, []
+
+    cmd = [py, OCR_SCRIPT, video, audio_json, "--name-transcript", "--step", str(step)]
     if ffmpeg:
         cmd += ["--ffmpeg", ffmpeg]
     if roster and roster.strip():
         cmd += ["--roster", roster]
+    err_lines = []
     try:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                text=True, bufsize=1)
         ocr_re = re.compile(r"OCR (\d+)/(\d+)")
 
         def pump():
             for line in proc.stderr:
+                err_lines.append(line)
                 m = ocr_re.search(line)
                 if m and jid and int(m.group(2)):
                     emit(jid, {"type": "progress", "stage": "names",
@@ -951,11 +1046,34 @@ def ocr_name_transcript(video, audio_json, ffmpeg, step=4.0, jid=None, roster=""
         out = proc.stdout.read()
         proc.wait(timeout=1800)
         t.join(timeout=1)
-        line = (out or "").strip().splitlines()[-1]
-        data = json.loads(line)
-        return data.get("transcript", ""), data.get("roster", {}), data.get("speakers", [])
-    except Exception:
+    except Exception as e:  # noqa: BLE001
+        log(f"⚠ Speaker naming failed to run ({e.__class__.__name__}: {e}). "
+            f"Keeping the transcript without names.")
         return "", {}, []
+
+    if proc.returncode != 0:
+        tail = " ".join(l.strip() for l in err_lines[-3:] if l.strip())
+        log(f"⚠ Speaker naming exited with code {proc.returncode}"
+            + (f" — {tail}" if tail else "") + ". Keeping the transcript without names.")
+        return "", {}, []
+    lines = [l for l in (out or "").strip().splitlines() if l.strip()]
+    if not lines:
+        log("⚠ Speaker naming produced no output. Keeping the transcript without names.")
+        return "", {}, []
+    try:
+        data = json.loads(lines[-1])
+    except Exception as e:  # noqa: BLE001
+        log(f"⚠ Could not parse speaker-naming output ({e}). "
+            f"Keeping the transcript without names.")
+        return "", {}, []
+    transcript = data.get("transcript", "")
+    roster_d = data.get("roster", {})
+    speakers = data.get("speakers", [])
+    if not speakers:
+        log("🗣️ Speaker naming ran but matched 0 on-screen names — keeping the "
+            "segmented transcript. Tip: add an attendee list to lock onto names, "
+            "or tune the MOM_OCR_* env gates for an unusual meeting layout.")
+    return transcript, roster_d, speakers
 
 
 # ----------------------------------------------------------------------------
@@ -1303,9 +1421,15 @@ INDEX_HTML = r"""<!DOCTYPE html>
   header { padding:16px 28px; border-bottom:1px solid var(--border); background:var(--panel);
            display:flex; align-items:center; gap:14px; }
   header .logo { width:38px;height:38px;border-radius:9px;background:var(--accent);color:#fff;
-                 display:flex;align-items:center;justify-content:center;font-size:19px;font-weight:700; }
-  header h1 { font-size:17px; margin:0; font-weight:700; letter-spacing:-.2px; }
+                 display:flex;align-items:center;justify-content:center; }
+  header h1 { font-size:17px; margin:0; font-weight:500; letter-spacing:-.2px; }
   header p { margin:2px 0 0; color:var(--muted); font-size:13px; }
+  /* inline SVG icons (offline sprite) — inherit text color + size */
+  svg.ic { width:1.05em; height:1.05em; flex-shrink:0; vertical-align:-.15em; }
+  .badge { font-size:11px; font-weight:500; padding:3px 9px; border-radius:999px;
+           background:var(--accent-tint); color:var(--accent-dark); }
+  .status-pill { display:inline-flex; align-items:center; gap:5px; font-size:12px; font-weight:500;
+                 padding:5px 11px; border-radius:999px; background:var(--green-tint); color:#166534; }
   .wrap { max-width:860px; margin:0 auto; padding:24px 28px 96px; }
   .card { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:22px; margin-bottom:18px;
           box-shadow:0 1px 2px rgba(15,23,42,.04), 0 1px 3px rgba(15,23,42,.06); }
@@ -1321,9 +1445,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
   /* numbered step blocks */
   .step-block { padding-bottom:20px; border-bottom:1px solid var(--border); margin-bottom:20px; }
   .step-block:last-child { border-bottom:0; padding-bottom:0; margin-bottom:0; }
-  .step-head { display:flex; align-items:center; gap:10px; font-weight:600; font-size:15px; margin-bottom:14px; }
+  .step-head { display:flex; align-items:center; gap:10px; font-weight:500; font-size:15px; margin-bottom:14px; }
   .step-num { width:24px;height:24px;border-radius:50%;background:var(--accent);color:#fff;font-size:13px;
-              font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0; }
+              font-weight:500;display:flex;align-items:center;justify-content:center;flex-shrink:0; }
   .or { color:var(--muted); font-size:11.5px; text-align:center; margin:12px 0; letter-spacing:.08em; text-transform:uppercase; }
   #drop { border:2px dashed var(--border-strong); border-radius:10px; padding:26px 20px; text-align:center;
           cursor:pointer; transition:.15s; background:var(--panel2); }
@@ -1334,17 +1458,19 @@ INDEX_HTML = r"""<!DOCTYPE html>
   #fileRow { display:flex; align-items:center; gap:12px; background:var(--panel2); border:1px solid var(--border);
              border-radius:8px; padding:12px 14px; margin-top:12px; }
   #fileRow .fi-ic { font-size:20px; }
-  #fileRow .fi-name { font-weight:600; font-size:14px; }
+  #fileRow .fi-name { font-weight:500; font-size:14px; }
   #fileRow .fi-meta { color:var(--muted); font-size:12.5px; }
-  .link-btn { background:none; border:0; color:var(--accent); font-size:13px; font-weight:600; cursor:pointer; padding:4px 6px; }
+  .link-btn { background:none; border:0; color:var(--accent); font-size:13px; font-weight:500; cursor:pointer; padding:4px 6px; }
   .link-btn:hover { text-decoration:underline; }
   .reason { color:var(--muted); font-size:13px; }
   button.primary { background:var(--accent); color:#fff; border:0; border-radius:8px; padding:11px 20px;
-                   font-size:14px; font-weight:600; cursor:pointer; transition:.12s; }
+                   font-size:14px; font-weight:500; cursor:pointer; transition:.12s;
+                   display:inline-flex; align-items:center; gap:7px; }
   button.primary:hover { background:var(--accent-dark); }
   button.primary:disabled { background:var(--border-strong); cursor:not-allowed; }
   button.ghost { background:var(--panel); color:var(--text); border:1px solid var(--border-strong);
-                 border-radius:8px; padding:9px 14px; font-size:13px; font-weight:500; cursor:pointer; transition:.12s; }
+                 border-radius:8px; padding:9px 14px; font-size:13px; font-weight:500; cursor:pointer; transition:.12s;
+                 display:inline-flex; align-items:center; gap:6px; }
   button.ghost:hover { border-color:var(--accent); color:var(--accent); }
   .banner { padding:12px 16px; border-radius:8px; font-size:13.5px; margin-bottom:16px; }
   .banner.ok { background:var(--green-tint); border:1px solid var(--green-border); color:#166534; }
@@ -1373,15 +1499,23 @@ INDEX_HTML = r"""<!DOCTYPE html>
          font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; max-height:170px; overflow:auto; white-space:pre-wrap; }
   .hidden { display:none !important; }
   /* result: fork + saved location */
-  #resultHead { font-size:17px; font-weight:700; margin-bottom:16px; }
+  #resultHead { font-size:17px; font-weight:500; margin-bottom:16px; display:flex; align-items:center; gap:8px; }
+  #resultHead .ic { color:var(--green); width:1.15em; height:1.15em; }
   #routeCards { display:flex; gap:14px; flex-wrap:wrap; margin-bottom:18px; }
-  .route { flex:1; min-width:260px; border:1px solid var(--border); border-radius:10px; padding:16px 18px; background:var(--panel2); }
-  .route.reco { border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-tint); }
-  .route-title { font-weight:700; font-size:14.5px; margin-bottom:4px; }
-  .route-sub { color:var(--muted); font-size:12.5px; line-height:1.5; margin-bottom:12px; }
+  .route { flex:1; min-width:260px; border:1px solid var(--border); border-radius:12px; padding:16px 18px; background:var(--panel2);
+           display:flex; flex-direction:column; gap:7px; }
+  .route.reco { border:2px solid var(--accent); padding:15px 17px; }
+  .route-head { display:flex; align-items:center; justify-content:space-between; }
+  .route-head .ic { width:20px; height:20px; }
+  .route-title { font-weight:500; font-size:14.5px; }
+  .route-sub { color:var(--muted); font-size:12.5px; line-height:1.5; margin-bottom:4px; }
   .route .btns { display:flex; gap:8px; flex-wrap:wrap; }
-  .saved-loc { display:flex; align-items:center; gap:10px; font-size:12.5px; color:var(--muted); margin-bottom:14px; }
+  .saved-loc { display:flex; align-items:center; gap:8px; font-size:12.5px; color:var(--muted); margin-bottom:14px; }
   .saved-loc code { background:var(--panel2); border:1px solid var(--border); border-radius:5px; padding:2px 7px; font-size:12px; }
+  #momHead { display:flex; align-items:center; gap:7px; font-size:12px; color:var(--muted);
+             background:var(--panel2); border:1px solid var(--border); border-bottom:0;
+             border-radius:10px 10px 0 0; padding:9px 14px; }
+  #momHead + #mom { border-radius:0 0 10px 10px; border-top:0; }
   #mom { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:8px 26px 26px; overflow-x:auto; }
   #mom h1,#mom h2,#mom h3 { line-height:1.3; }
   #mom h1 { font-size:22px; border-bottom:1px solid var(--border); padding-bottom:8px; }
@@ -1394,15 +1528,16 @@ INDEX_HTML = r"""<!DOCTYPE html>
   #mom li { margin:3px 0; }
   .toolbar { display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin:6px 0 12px; }
   #speakerPanel { background:var(--amber-tint); border:1px solid var(--amber-border); border-radius:10px; padding:16px 18px; margin-bottom:18px; }
-  #speakerPanel h4 { margin:0 0 4px; font-size:14.5px; font-weight:700; }
+  #speakerPanel h4 { margin:0 0 4px; font-size:14.5px; font-weight:500; display:flex; align-items:center; gap:7px; }
   #speakerPanel .sp-sub { color:var(--muted); font-size:12.5px; font-weight:400; display:block; margin-bottom:12px; }
   #speakerPanel .sp-row { display:flex; align-items:center; gap:10px; margin:8px 0; }
-  #speakerPanel .sp-row .lab { width:120px; color:#92400e; font-size:12.5px; font-weight:600; }
+  #speakerPanel .sp-row .lab { width:120px; color:#92400e; font-size:12.5px; font-weight:500; }
   #speakerPanel input { flex:1; background:var(--panel); color:var(--text); border:1px solid var(--border-strong); border-radius:8px; padding:8px 11px; font-size:14px; }
   details { margin-top:18px; }
   summary { cursor:pointer; color:var(--muted); font-size:13px; }
   .spin { display:inline-block; width:14px;height:14px;border:2px solid rgba(255,255,255,.3);
           border-top-color:#fff;border-radius:50%;animation:s .8s linear infinite;vertical-align:-2px;margin-right:8px;}
+  svg.spin-ic { animation:s .9s linear infinite; }
   @keyframes s { to { transform:rotate(360deg);} }
   @media print {
     header, #banner, #inputCard, #progCard, .toolbar, #routeCards, #resultHead,
@@ -1416,11 +1551,12 @@ INDEX_HTML = r"""<!DOCTYPE html>
 </style>
 </head>
 <body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs><symbol id="i-alert-triangle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4" /> <path d="M10.363 3.591l-8.106 13.534a1.914 1.914 0 0 0 1.636 2.871h16.214a1.914 1.914 0 0 0 1.636 -2.87l-8.106 -13.536a1.914 1.914 0 0 0 -3.274 0" /> <path d="M12 16h.01" /></symbol><symbol id="i-arrow-up-right" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 7l-10 10" /> <path d="M8 7l9 0l0 9" /></symbol><symbol id="i-ban" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 18 0a9 9 0 1 0 -18 0" /> <path d="M5.7 5.7l12.6 12.6" /></symbol><symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5l10 -10" /></symbol><symbol id="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 9.667a2.667 2.667 0 0 1 2.667 -2.667h8.666a2.667 2.667 0 0 1 2.667 2.667v8.666a2.667 2.667 0 0 1 -2.667 2.667h-8.666a2.667 2.667 0 0 1 -2.667 -2.667l0 -8.666" /> <path d="M4.012 16.737a2.005 2.005 0 0 1 -1.012 -1.737v-10c0 -1.1 .9 -2 2 -2h10c.75 0 1.158 .385 1.5 1" /></symbol><symbol id="i-device-floppy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 4h10l4 4v10a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2v-12a2 2 0 0 1 2 -2" /> <path d="M10 14a2 2 0 1 0 4 0a2 2 0 1 0 -4 0" /> <path d="M14 4l0 4l-6 0l0 -4" /></symbol><symbol id="i-download" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2" /> <path d="M7 11l5 5l5 -5" /> <path d="M12 4l0 12" /></symbol><symbol id="i-eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 12a2 2 0 1 0 4 0a2 2 0 0 0 -4 0" /> <path d="M21 12c-2.4 4 -5.4 6 -9 6c-3.6 0 -6.6 -2 -9 -6c2.4 -4 5.4 -6 9 -6c3.6 0 6.6 2 9 6" /></symbol><symbol id="i-file-text" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3v4a1 1 0 0 0 1 1h4" /> <path d="M17 21h-10a2 2 0 0 1 -2 -2v-14a2 2 0 0 1 2 -2h7l5 5v11a2 2 0 0 1 -2 2" /> <path d="M9 9l1 0" /> <path d="M9 13l6 0" /> <path d="M9 17l6 0" /></symbol><symbol id="i-folder-open" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 19l2.757 -7.351a1 1 0 0 1 .936 -.649h12.307a1 1 0 0 1 .986 1.164l-.996 5.211a2 2 0 0 1 -1.964 1.625h-14.026a2 2 0 0 1 -2 -2v-11a2 2 0 0 1 2 -2h4l3 3h7a2 2 0 0 1 2 2v2" /></symbol><symbol id="i-loader-2" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a9 9 0 1 0 9 9" /></symbol><symbol id="i-lock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13a2 2 0 0 1 2 -2h10a2 2 0 0 1 2 2v6a2 2 0 0 1 -2 2h-10a2 2 0 0 1 -2 -2v-6" /> <path d="M11 16a1 1 0 1 0 2 0a1 1 0 0 0 -2 0" /> <path d="M8 11v-4a4 4 0 1 1 8 0v4" /></symbol><symbol id="i-microphone-2" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 12.9a5 5 0 1 0 -3.902 -3.9" /> <path d="M15 12.9l-3.902 -3.899l-7.513 8.584a2 2 0 1 0 2.827 2.83l8.588 -7.515" /></symbol><symbol id="i-pencil" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4l10.5 -10.5a2.828 2.828 0 1 0 -4 -4l-10.5 10.5v4" /> <path d="M13.5 6.5l4 4" /></symbol><symbol id="i-printer" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 17h2a2 2 0 0 0 2 -2v-4a2 2 0 0 0 -2 -2h-14a2 2 0 0 0 -2 2v4a2 2 0 0 0 2 2h2" /> <path d="M17 9v-4a2 2 0 0 0 -2 -2h-6a2 2 0 0 0 -2 2v4" /> <path d="M7 15a2 2 0 0 1 2 -2h6a2 2 0 0 1 2 2v4a2 2 0 0 1 -2 2h-6a2 2 0 0 1 -2 -2l0 -4" /></symbol><symbol id="i-sparkles" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 18a2 2 0 0 1 2 2a2 2 0 0 1 2 -2a2 2 0 0 1 -2 -2a2 2 0 0 1 -2 2m0 -12a2 2 0 0 1 2 2a2 2 0 0 1 2 -2a2 2 0 0 1 -2 -2a2 2 0 0 1 -2 2m-7 12a6 6 0 0 1 6 -6a6 6 0 0 1 -6 -6a6 6 0 0 1 -6 6a6 6 0 0 1 6 6" /></symbol><symbol id="i-users" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 7a4 4 0 1 0 8 0a4 4 0 1 0 -8 0" /> <path d="M3 21v-2a4 4 0 0 1 4 -4h4a4 4 0 0 1 4 4v2" /> <path d="M16 3.13a4 4 0 0 1 0 7.75" /> <path d="M21 21v-2a4 4 0 0 0 -3 -3.85" /></symbol><symbol id="i-writing" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 17v-12c0 -1.121 -.879 -2 -2 -2s-2 .879 -2 2v12l2 2l2 -2" /> <path d="M16 7h4" /> <path d="M18 19h-13a2 2 0 1 1 0 -4h4a2 2 0 1 0 0 -4h-3" /></symbol><symbol id="i-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6l-12 12" /> <path d="M6 6l12 12" /></symbol></defs></svg>
 <header>
-  <div class="logo">📝</div>
+  <div class="logo"><svg class="ic"><use href="#i-file-text"/></svg></div>
   <div>
     <h1>MoM Generator</h1>
-    <p>Meeting recording → speaker-labelled transcript → styled Minutes-of-Meeting · ⚡ on-device, 100% local</p>
+    <p>Meeting recording → speaker-labelled transcript → styled Minutes-of-Meeting · on-device, 100% local</p>
   </div>
 </header>
 <div class="wrap">
@@ -1438,13 +1574,13 @@ INDEX_HTML = r"""<!DOCTYPE html>
              placeholder="Paste a file path on this Mac — e.g. ~/Downloads/meeting.mp4">
       <div class="or">— or —</div>
       <div id="drop">
-        <div class="big">🎙️</div>
+        <div class="big"><svg style="width:30px;height:30px;color:var(--muted)" aria-hidden="true"><use href="#i-microphone-2"/></svg></div>
         <div>Drag a recording here, or <u>click to choose a file</u></div>
         <div class="sub">.mp4 · .mov · .m4a · .mp3 · .wav · .aac — audio or video</div>
         <input type="file" id="file" class="hidden" accept="audio/*,video/*">
       </div>
       <div id="fileRow" class="hidden">
-        <span class="fi-ic">📎</span>
+        <span class="fi-ic"><svg style="width:20px;height:20px;color:var(--muted)" aria-hidden="true"><use href="#i-file-text"/></svg></span>
         <div style="flex:1">
           <div class="fi-name" id="fiName"></div>
           <div class="fi-meta" id="fiMeta"></div>
@@ -1510,40 +1646,46 @@ INDEX_HTML = r"""<!DOCTYPE html>
   </div>
 
   <div class="card hidden" id="resultCard">
-    <div id="resultHead">✅ Transcript ready — with speaker names</div>
+    <div id="resultHead"><svg class="ic"><use href="#i-check"/></svg> Transcript ready — with speaker names</div>
 
     <div id="speakerPanel" class="hidden"></div>
 
     <!-- Choose how to create the MoM -->
     <div id="routeCards">
       <div class="route reco">
-        <div class="route-title">✨ Best quality — Google Gemini</div>
-        <div class="route-sub">Reads your screenshots too. Paste into Gemini, then paste the result into Gmail — same styled email every meeting.</div>
+        <div class="route-head">
+          <svg class="ic" style="color:var(--accent)"><use href="#i-sparkles"/></svg>
+          <span class="badge">Recommended</span>
+        </div>
+        <div class="route-title">Google Gemini</div>
+        <div class="route-sub">Best quality, and it reads your screenshots. Paste into Gemini, then paste the result into Gmail.</div>
         <div class="btns">
-          <button class="primary" id="copyPromptBtn" title="Copies the styling prompt with this transcript embedded — paste into Gemini, attach screenshots">✨ Copy Gemini prompt</button>
-          <button class="ghost" id="dlTxtBtn">⬇️ Transcript .txt</button>
-          <button class="ghost" id="copyTxtBtn">Copy transcript</button>
+          <button class="primary" id="copyPromptBtn" title="Copies the styling prompt with this transcript embedded — paste into Gemini, attach screenshots"><svg class="ic"><use href="#i-sparkles"/></svg> Copy prompt</button>
+          <button class="ghost" id="dlTxtBtn"><svg class="ic"><use href="#i-download"/></svg> Transcript</button>
+          <button class="ghost" id="copyTxtBtn"><svg class="ic"><use href="#i-copy"/></svg> Copy</button>
         </div>
       </div>
       <div class="route">
-        <div class="route-title">🔒 Private &amp; offline</div>
-        <div class="route-sub">100% on your Mac, no tokens. Drafts the styled MoM with your local model (screenshots not read).</div>
+        <div class="route-head"><svg class="ic" style="color:var(--muted)"><use href="#i-lock"/></svg></div>
+        <div class="route-title">Private and offline</div>
+        <div class="route-sub">On your Mac, no tokens. Drafts the styled MoM with your local model (screenshots not read).</div>
         <div class="btns">
-          <button class="primary" id="styledBtn" title="Generate the styled email MoM locally with your Ollama model — 100% offline, no tokens">🖌️ Generate styled MoM</button>
+          <button class="primary" id="styledBtn" title="Generate the styled email MoM locally with your Ollama model — 100% offline, no tokens"><svg class="ic"><use href="#i-file-text"/></svg> Generate MoM</button>
         </div>
       </div>
     </div>
 
     <!-- Actions once a MoM exists -->
     <div id="momActions" class="toolbar hidden">
-      <button class="primary" id="copyRichBtn">📋 Copy for Gmail</button>
-      <button class="ghost" id="dlBtn">⬇️ Download .md</button>
-      <button class="ghost" id="pdfBtn">🖨️ Save as PDF</button>
-      <button class="ghost" id="openFolderBtn">📁 Open folder</button>
-      <button class="ghost" id="copyBtn">Copy text</button>
+      <button class="primary" id="copyRichBtn"><svg class="ic"><use href="#i-copy"/></svg> Copy for Gmail</button>
+      <button class="ghost" id="dlBtn"><svg class="ic"><use href="#i-download"/></svg> Download</button>
+      <button class="ghost" id="pdfBtn"><svg class="ic"><use href="#i-printer"/></svg> Save as PDF</button>
+      <button class="ghost" id="openFolderBtn"><svg class="ic"><use href="#i-folder-open"/></svg> Open folder</button>
+      <button class="ghost" id="copyBtn"><svg class="ic"><use href="#i-copy"/></svg> Copy text</button>
     </div>
     <div id="savedLoc" class="saved-loc hidden"></div>
 
+    <div id="momHead" class="hidden"><svg class="ic"><use href="#i-eye"/></svg> Preview — pastes into Gmail as-is</div>
     <div id="mom"></div>
     <details>
       <summary>Show raw transcript</summary>
@@ -1574,10 +1716,10 @@ async function loadHealth(){
   const notes = (h.notes && h.notes.length) ? '<div style="margin-top:6px;opacity:.85;font-size:12.5px">'+h.notes.join('<br>')+'</div>' : '';
   if (h.ready){
     b.className='banner ok';
-    b.innerHTML = '✅ Ready. Add a recording, then Generate — you\'ll get a speaker-labelled transcript.' + notes;
+    b.innerHTML = icon('check')+' Ready. Add a recording, then Generate — you\'ll get a speaker-labelled transcript.' + notes;
   } else {
     b.className='banner warn';
-    b.innerHTML = '⚠️ Some tools are missing — run <code>./setup.sh</code>:<ul>' +
+    b.innerHTML = icon('alert-triangle')+' Some tools are missing — run <code>./setup.sh</code>:<ul>' +
       h.issues.map(i=>'<li>'+i+'</li>').join('') + '</ul>' + notes;
   }
   updateGo();
@@ -1691,7 +1833,7 @@ $('#fetchBtn').onclick = async () => {
 
 function setStepIcon(el, state){
   const ic = el.querySelector('.ic'); if(!ic) return;
-  ic.textContent = state==='done' ? '✓' : (ic.dataset.n||ic.textContent);
+  ic.innerHTML = state==='done' ? '<svg style="width:13px;height:13px" aria-hidden="true"><use href="#i-check"/></svg>' : (ic.dataset.n||'');
 }
 function setStep(k, state){
   const order=['audio','transcribe','names'];
@@ -1715,7 +1857,7 @@ function listen(job){
     else if(d.type==='transcript'){ transcriptText = d.text; $('#rawTranscript').textContent = d.text; }
     else if(d.type==='partial'){ momText += d.text; $('#resultCard').classList.remove('hidden'); $('#mom').innerHTML = renderMd(momText); }
     else if(d.type==='done'){
-      es.close(); stopTimer(); setIndet(false); $('#progFill').style.width='100%'; $('#phaseLabel').textContent='✅ Done';
+      es.close(); stopTimer(); setIndet(false); $('#progFill').style.width='100%'; $('#phaseLabel').textContent='Done';
       ['audio','transcribe','names'].forEach(k=>setStep(k,'done'));
       renderResult(d);
       localStorage.removeItem('momJob'); loadRecent();
@@ -1723,16 +1865,18 @@ function listen(job){
       window.scrollTo({top: $('#resultCard').offsetTop-20, behavior:'smooth'});
     }
     else if(d.type==='error'){
-      es.close(); stopTimer(); setIndet(false); $('#phaseLabel').textContent='✖ Error';
-      logLine('✖ ERROR: '+d.error);
-      $('#banner').className='banner warn'; $('#banner').textContent='✖ '+d.error;
+      es.close(); stopTimer(); setIndet(false); $('#phaseLabel').textContent='Error';
+      logLine('ERROR: '+d.error);
+      $('#banner').className='banner warn'; $('#banner').innerHTML=icon('alert-triangle')+' '+d.error;
       $('#go').disabled=false; $('#fetchBtn').disabled=false;
     }
   };
   es.onerror = () => { es.close(); };
 }
 
-function flash(sel,msg){ const b=$(sel); const o=b.dataset.label||(b.dataset.label=b.textContent); b.textContent=msg; setTimeout(()=>b.textContent=o,1600); }
+function icon(n){ return '<svg class="ic"><use href="#i-'+n+'"/></svg>'; }
+// innerHTML-based so buttons keep their SVG icon after a flash message.
+function flash(sel,msg){ const b=$(sel); const o=b.dataset.html||(b.dataset.html=b.innerHTML); b.innerHTML=msg; setTimeout(()=>b.innerHTML=o,1600); }
 
 function renderSpeakerPanel(speakers, map, roster){
   const p = $('#speakerPanel'); p.classList.remove('hidden');
@@ -1742,16 +1886,16 @@ function renderSpeakerPanel(speakers, map, roster){
     '<div class="sp-row"><span class="lab">'+s+'</span>'+
     '<input data-spk="'+s+'" value="'+esc2(map[s]||'')+'" list="rosterList" '+
     'placeholder="name (blank = keep '+s+')"></div>').join('');
-  p.innerHTML = '<h4>🗣️ Review speaker names</h4>'+
+  p.innerHTML = '<h4>'+icon('users')+' Review speaker names</h4>'+
     '<span class="sp-sub">Read from the video — fix any that look wrong (autocompletes from your attendees), then apply.</span>'+
     rows + '<datalist id="rosterList">'+opts+'</datalist>'+
-    '<button class="primary" id="regenBtn" style="margin-top:12px">✓ Apply names &amp; update</button>';
+    '<button class="primary" id="regenBtn" style="margin-top:12px">'+icon('check')+' Apply names &amp; update</button>';
   $('#regenBtn').onclick = regen;
 }
 async function regen(){
   const mapping = {};
   document.querySelectorAll('#speakerPanel input').forEach(i=>{ if(i.value.trim()) mapping[i.dataset.spk]=i.value.trim(); });
-  const btn=$('#regenBtn'); const orig=btn.textContent; btn.textContent='Applying…'; btn.disabled=true;
+  const btn=$('#regenBtn'); const orig=btn.dataset.html||(btn.dataset.html=btn.innerHTML); btn.textContent='Applying…'; btn.disabled=true;
   try {
     const r = await fetch('/rename?job='+currentJob, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({mapping})});
     const d = await r.json();
@@ -1759,10 +1903,10 @@ async function regen(){
     else {
       if(d.transcript){ transcriptText = d.transcript; $('#rawTranscript').textContent = d.transcript; }
       if(d.markdown){ momText = d.markdown; $('#mom').innerHTML = renderMd(momText); }
-      flash('#regenBtn','✅ Updated');
+      flash('#regenBtn','Updated');
     }
   } catch(e){ alert('update failed'); }
-  btn.textContent=orig; btn.disabled=false;
+  btn.innerHTML=orig; btn.disabled=false;
 }
 
 $('#copyBtn').onclick = () => navigator.clipboard.writeText(momText).then(()=>flash('#copyBtn','Copied!'));
@@ -1792,7 +1936,7 @@ $('#copyPromptBtn').onclick = async () => {
     let prompt = (await r.json()).prompt || '';
     if(prompt.indexOf(transcriptText)===-1){ prompt = prompt.replace('<paste transcript here>', transcriptText); }
     await navigator.clipboard.writeText(prompt);
-    flash('#copyPromptBtn','✅ Copied — paste into Gemini + attach screenshots');
+    flash('#copyPromptBtn','Copied — paste into Gemini, attach screenshots');
   } catch(e){ flash('#copyPromptBtn','Copy failed'); }
 };
 
@@ -1813,8 +1957,8 @@ const EMAIL_STYLES = {
 // Offline styled MoM: local Ollama model -> JSON -> exact email template. No tokens.
 $('#styledBtn').onclick = async () => {
   if(!transcriptText){ flash('#styledBtn','No transcript yet'); return; }
-  const b=$('#styledBtn'); const orig=b.dataset.label||(b.dataset.label=b.textContent);
-  b.textContent='⏳ Generating locally…'; b.disabled=true;
+  const b=$('#styledBtn'); const orig=b.dataset.html||(b.dataset.html=b.innerHTML);
+  b.innerHTML='<svg class="ic spin-ic" aria-hidden="true"><use href="#i-loader-2"/></svg> Generating on your Mac…'; b.disabled=true;
   try {
     const r = await fetch('/styled_mom?job='+(currentJob||''), {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
     const d = await r.json();
@@ -1822,12 +1966,13 @@ $('#styledBtn').onclick = async () => {
     else {
       styledHtml = d.html;
       $('#mom').innerHTML = styledHtml;
+      $('#momHead').classList.remove('hidden');
       $('#momActions').classList.remove('hidden');
       $('#resultCard').classList.remove('hidden');
-      b.textContent='✅ Drafted with '+d.model; setTimeout(()=>{b.textContent=orig;},2500);
-      $('#mom').scrollIntoView({behavior:'smooth', block:'start'});
+      b.innerHTML=icon('check')+' Drafted with '+d.model; setTimeout(()=>{b.innerHTML=orig;},2500);
+      $('#momHead').scrollIntoView({behavior:'smooth', block:'start'});
     }
-  } catch(e){ alert('Local MoM failed'); b.textContent=orig; }
+  } catch(e){ alert('Local MoM failed'); b.innerHTML=orig; }
   b.disabled=false;
 };
 
@@ -1843,7 +1988,7 @@ $('#copyRichBtn').onclick = async () => {
       'text/html': new Blob([html], {type:'text/html'}),
       'text/plain': new Blob([plain], {type:'text/plain'})
     })]);
-    flash('#copyRichBtn','✅ Copied — paste into Gmail');
+    flash('#copyRichBtn','Copied — paste into Gmail');
     return;
   } catch(e){}
   try {
@@ -1851,14 +1996,14 @@ $('#copyRichBtn').onclick = async () => {
       'text/html': new Blob([html], {type:'text/html'}),
       'text/plain': new Blob([momText], {type:'text/plain'})
     })]);
-    flash('#copyRichBtn','✅ Copied — paste into Gmail');
+    flash('#copyRichBtn','Copied — paste into Gmail');
   } catch(e){
     // Fallback for browsers without ClipboardItem: select rendered HTML + execCommand.
     const tmp=document.createElement('div'); tmp.innerHTML=html;
     tmp.style.cssText='position:fixed;left:-9999px;top:0'; document.body.appendChild(tmp);
     const sel=getSelection(), r=document.createRange(); r.selectNodeContents(tmp);
     sel.removeAllRanges(); sel.addRange(r);
-    try{ document.execCommand('copy'); flash('#copyRichBtn','✅ Copied — paste into Gmail'); }
+    try{ document.execCommand('copy'); flash('#copyRichBtn','Copied — paste into Gmail'); }
     catch(_){ flash('#copyRichBtn','Copy failed'); }
     sel.removeAllRanges(); document.body.removeChild(tmp);
   }
@@ -1900,14 +2045,15 @@ function renderResult(d){
   $('#resultCard').classList.remove('hidden');
   // The fork is available whenever there's a transcript to work from.
   $('#routeCards').classList.toggle('hidden', !transcriptText);
-  // MoM actions appear only once a MoM (local draft) actually exists.
+  // MoM actions + preview header appear only once a MoM actually exists.
   $('#momActions').classList.toggle('hidden', !momText);
+  $('#momHead').classList.toggle('hidden', !momText);
   if(d.transcript) $('#rawTranscript').textContent = d.transcript;
   currentOutdir = d.outdir || '';
   const sl = $('#savedLoc');
   if(currentOutdir){
     sl.classList.remove('hidden');
-    sl.innerHTML = '💾 Saved to <code>'+currentOutdir.replace(/^.*\/Documents/,'~/Documents')+'</code>';
+    sl.innerHTML = icon('device-floppy')+' Saved to <code>'+currentOutdir.replace(/^.*\/Documents/,'~/Documents')+'</code>';
   } else { sl.classList.add('hidden'); }
   if(d.speakers && d.speakers.length) renderSpeakerPanel(d.speakers, d.speaker_map||{}, d.roster||[]);
   else $('#speakerPanel').classList.add('hidden');
@@ -1918,7 +2064,7 @@ $('#openFolderBtn').onclick = async () => {
   if(!currentOutdir){ flash('#openFolderBtn','No folder'); return; }
   try {
     const r = await fetch('/open_folder', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({dir: currentOutdir})});
-    const d = await r.json(); if(d.error) flash('#openFolderBtn', 'Could not open'); else flash('#openFolderBtn','✅ Opened');
+    const d = await r.json(); if(d.error) flash('#openFolderBtn', 'Could not open'); else flash('#openFolderBtn','Opened');
   } catch(e){ flash('#openFolderBtn','Could not open'); }
 };
 
@@ -1967,7 +2113,27 @@ tryResume();
 """
 
 
+def self_check():
+    """Report detected engine, ocrmac availability and model discovery WITHOUT
+    processing any file. Run: python3 server.py --self-check"""
+    whisper = find_whisper()
+    ocr_py, ocr_reason = ocrmac_python()
+    print("MoM Generator — self-check")
+    print(f"  ffmpeg:        {find_ffmpeg() or '❌ not found'}")
+    print(f"  whisper.cpp dir: {WHISPERCPP_DIR or '(none discovered)'}")
+    if whisper:
+        print(f"  transcriber:   {whisper['type']}"
+              + (f" · model {os.path.basename(whisper.get('model',''))}" if whisper.get('model') else ""))
+    else:
+        print("  transcriber:   ❌ none (run ./setup.sh)")
+    print(f"  ocrmac Python: {ocr_py or '❌ ' + ocr_reason}")
+    print(f"  ollama:        {find_ollama() or '❌ not found (optional)'}")
+    return 0 if (whisper and find_ffmpeg()) else 1
+
+
 def main():
+    if "--self-check" in sys.argv[1:]:
+        sys.exit(self_check())
     os.makedirs(OUTPUT_BASE, exist_ok=True)
     cleanup_incomplete_outputs()  # tidy abandoned/failed runs from before
     try:

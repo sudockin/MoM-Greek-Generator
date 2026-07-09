@@ -67,11 +67,18 @@ UV="$HOME/.local/bin/uv"; [ -x "$UV" ] || UV="$(command -v uv)"
 say "Installing Python 3.11 + WhisperX (fallback transcriber) + Apple Vision OCR (~1 GB)."
 "$UV" python install 3.11
 "$UV" venv "$VENV" --python 3.11
+# ocrmac: Apple Vision OCR — reads on-screen speaker names from video calls. This
+#   is what the FAST whisper.cpp path needs for naming (OCR needs ocrmac, NOT
+#   WhisperX), so install it FIRST and on its own — it must land even if the heavy
+#   WhisperX resolve below is skipped or fails.
+"$UV" pip install --python "$VENV/bin/python" ocrmac \
+  && ok "Apple Vision OCR (ocrmac) installed" \
+  || warn "ocrmac install failed — on-screen speaker naming stays off until it's installed"
 # soundfile: gives torchaudio/pyannote a WAV backend without FFmpeg shared libs
 #   (torchcodec can't find them on a stock Mac) — required for diarization.
-# ocrmac:    Apple Vision OCR, reads on-screen speaker names from video calls.
-"$UV" pip install --python "$VENV/bin/python" whisperx soundfile ocrmac \
-  && ok "WhisperX + OCR installed ($("$VENV/bin/whisperx" --version 2>/dev/null))"
+"$UV" pip install --python "$VENV/bin/python" whisperx soundfile \
+  && ok "WhisperX installed ($("$VENV/bin/whisperx" --version 2>/dev/null))" \
+  || warn "WhisperX install skipped — the whisper.cpp fast path still works"
 
 # ----------------------------------------------------------------- Ollama ---
 if command -v ollama >/dev/null 2>&1 || [ -x "/Applications/Ollama.app/Contents/Resources/ollama" ]; then

@@ -28,14 +28,24 @@ import unicodedata
 
 FFMPEG = os.environ.get("MOM_FFMPEG") or "ffmpeg"
 
+def _envf(name, default):
+    """Read a float from env (for tuning geometry gates on unusual layouts)."""
+    try:
+        return float(os.environ[name])
+    except (KeyError, ValueError):
+        return default
+
 # Text-height window for a name tag (normalized). Real tags measured ~0.016–0.026.
-LABEL_MIN_H = 0.008
-LABEL_MAX_H = 0.05
+LABEL_MIN_H = _envf("MOM_OCR_MIN_H", 0.008)
+LABEL_MAX_H = _envf("MOM_OCR_MAX_H", 0.05)
 # Position gates (ocrmac bbox = [x, y, w, h], normalized, origin BOTTOM-left).
-RIGHT_TILE_MIN_X = 0.55      # Google Meet floating active-speaker tile (bottom-right)
-TEAMS_MAX_X = 0.06           # Teams name tag (hard bottom-left)
-TEAMS_MAX_Y = 0.10
-ROSTER_MATCH_MIN = 0.72      # fuzzy ratio to accept an OCR string as a roster name
+RIGHT_TILE_MIN_X = _envf("MOM_OCR_RIGHT_MIN_X", 0.55)  # Meet floating active-speaker tile (bottom-right)
+TEAMS_MAX_X = _envf("MOM_OCR_TEAMS_MAX_X", 0.06)       # Teams name tag (hard bottom-left)
+TEAMS_MAX_Y = _envf("MOM_OCR_TEAMS_MAX_Y", 0.10)
+# Permissive band for the common bottom-name-strip layout — used only to PREFER a
+# bottom name when a roster already vouches for it (never widens acceptance alone).
+BOTTOM_STRIP_MAX_Y = _envf("MOM_OCR_BOTTOM_MAX_Y", 0.12)
+ROSTER_MATCH_MIN = _envf("MOM_OCR_ROSTER_MIN", 0.72)   # fuzzy ratio to accept an OCR string as a roster name
 
 # Punctuation that never appears in a clean name tag (so we reject doc/UI lines).
 _BAD_CHARS = set(",:;•|/\\()[]{}@#%&*=<>\"")
@@ -54,13 +64,22 @@ def normalize(s):
     return re.sub(r"\s+", " ", s).strip()
 
 
-def is_person_name(s):
-    """2–3 capitalised, letters-only tokens (Latin or Greek); no digits/punctuation.
+def strip_company_tag(s):
+    """'Maria K. (efood)' -> 'Maria K.' — Meet often appends an org in parentheses."""
+    return re.sub(r"\s*\([^)]*\)\s*$", "", (s or "").strip()).strip()
 
-    Uses Unicode-aware str methods rather than a regex range so Greek caps work."""
-    s = s.strip()
+
+def is_person_name(s, allow_single=False):
+    """Capitalised, letters-only name tokens (Latin or Greek); no digits/punctuation.
+
+    Accepts 2–3 tokens by default; with allow_single=True also accepts a single
+    first-name token (only safe when a roster vouches for it — see name_from_results).
+    A trailing '(Company)' tag is stripped first. Uses Unicode-aware str methods
+    rather than a regex range so Greek caps work."""
+    s = strip_company_tag(s)
     toks = s.split()
-    if not (2 <= len(toks) <= 3):
+    lo = 1 if allow_single else 2
+    if not (lo <= len(toks) <= 3):
         return False
     if any(ch.isdigit() for ch in s) or any(ch in _BAD_CHARS for ch in s):
         return False
@@ -85,13 +104,18 @@ def parse_roster(raw):
 def roster_match(text, roster_pairs):
     """Return the canonical roster name an OCR string corresponds to, or None.
 
-    Fuzzy so OCR slips ('Ganatsios' vs 'Gkanatsios') still match the attendee."""
+    Fuzzy so OCR slips ('Ganatsios' vs 'Gkanatsios') still match the attendee.
+    Also matches a single on-screen first name ('Maria') against a full roster
+    entry ('Maria Kolovou') by taking the best of the full-string and per-token
+    ratios — a first name IS a strong signal since it must be an attendee token."""
     cn = normalize(text)
     if not cn:
         return None
     best, best_r = None, 0.0
     for canon, rn in roster_pairs:
         r = difflib.SequenceMatcher(None, cn, rn).ratio()
+        for tok in rn.split():
+            r = max(r, difflib.SequenceMatcher(None, cn, tok).ratio())
         if r > best_r:
             best_r, best = r, canon
     return best if best_r >= ROSTER_MATCH_MIN else None
@@ -105,19 +129,24 @@ def name_from_results(results, roster_pairs=None):
     floating right-side tile, or Teams' bottom-left) and prefer name-like text."""
     cands = []
     for text, conf, (x, y, w, h) in results:
-        t = (text or "").strip()
+        t = strip_company_tag((text or "").strip())
         if conf < 0.3 or not (LABEL_MIN_H <= h <= LABEL_MAX_H):
             continue
-        if not is_person_name(t):
+        # Single-token first names are only trusted when a roster can vouch for them
+        # (otherwise stray one-word UI labels would leak in) — so gate allow_single.
+        if not is_person_name(t, allow_single=bool(roster_pairs)):
             continue
         right = x > RIGHT_TILE_MIN_X
         teams = x < TEAMS_MAX_X and y < TEAMS_MAX_Y
+        bottom = y < BOTTOM_STRIP_MAX_Y
         if roster_pairs:
             canon = roster_match(t, roster_pairs)
             if not canon:
                 continue
-            # Strong roster match → allow any position, but prefer the real tile.
-            score = conf + 5.0 + (3.0 if right else 0.0) + (2.0 if teams else 0.0)
+            # Strong roster match → allow any position, but prefer the real tile
+            # (right/teams) and the common bottom name-strip.
+            score = (conf + 5.0 + (3.0 if right else 0.0)
+                     + (2.0 if teams else 0.0) + (1.0 if bottom else 0.0))
             cands.append((score, canon))
         else:
             if not (right or teams):
