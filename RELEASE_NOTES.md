@@ -65,7 +65,7 @@ Full details, sharing instructions, and troubleshooting are in [`README.md`](REA
 ---
 
 ### Requirements
-Apple‑silicon Mac (M1–M4), ~15 GB free for the one‑time model downloads. Built for internal efood / DH Pay use.
+Apple‑silicon Mac (M1–M4), ~15 GB free for the one‑time model downloads. Built for internal efood / Foody use.
 
 ---
 

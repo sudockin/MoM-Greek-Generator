@@ -19,7 +19,7 @@ action-item cards, ready to paste into Gmail.
 
 =====
 You are writing a polished **Minutes of Meeting (MoM) follow-up email** for the
-e-food / DH Pay teams.
+efood / Foody teams.
 
 INPUTS
 - A raw meeting transcript below. It may be in **Greek**, and lines may be

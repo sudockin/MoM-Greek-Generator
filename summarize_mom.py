@@ -14,7 +14,7 @@ import urllib.request
 
 PROMPT_TEMPLATE = """Create a Google Gemini-style MoM (Minutes of Meeting) from this transcript.
 
-The transcript may be in Greek. Write the MoM in clear internal English for efood/Foody and DH stakeholders.
+The transcript may be in Greek. Write the MoM in clear internal English for the efood and Foody teams.
 
 __ATTENDEES_BLOCK__
 
