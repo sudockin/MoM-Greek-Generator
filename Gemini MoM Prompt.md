@@ -37,6 +37,7 @@ CONTENT RULES
   the transcript/screenshots. If something is unclear, leave it out or mark it.
 - **Owners** of action items must be a person named in the transcript or attendee
   list. If the owner is unclear, write `⚠️ owner not stated` — never guess a name.
+- The transcript is machine-transcribed: English technical terms embedded in Greek speech may be phonetically garbled (e.g. a product name rendered as similar-sounding Greek). Restore the intended term when it is obvious from context; if unsure, keep the transcript wording.
 - Preserve the **efood/Foody (local) ↔ DH / Central (global)** ownership nuance;
   do not commit DH/Central to capabilities that were not actually stated.
 - Keep it concise and skimmable. Summarise; don't transcribe.

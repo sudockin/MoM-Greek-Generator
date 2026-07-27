@@ -33,6 +33,7 @@ Rules:
 - Use red/yellow/green status signals (🔴/🟡/🟢) for risk and priority.
 - Action Items MUST be a markdown table with columns: Action | Owner | Due | Status. Owner must be a name from the Attendees list or "⚠️ owner not stated".
 - Be faithful to the transcript; do not invent.
+- The transcript is machine-transcribed: English technical terms embedded in Greek speech may be phonetically garbled (e.g. a product name rendered as similar-sounding Greek). Restore the intended term when it is obvious from context; if unsure, keep the transcript wording.
 
 Transcript:
 __TRANSCRIPT__

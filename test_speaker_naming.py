@@ -63,9 +63,14 @@ class NameFromResults(unittest.TestCase):
 
 
 class ModelDiscovery(unittest.TestCase):
-    def test_whispercpp_dir_has_no_personal_path(self):
-        # The old hardcoded /Users/<name>/... default must be gone.
-        self.assertNotIn("/Users/pj", server.WHISPERCPP_DIR)
+    def test_whispercpp_dir_has_no_hardcoded_personal_path(self):
+        # The discovered dir may legitimately live under THIS user's $HOME
+        # (~/.cache/whisper-cpp); what must never come back is a developer
+        # path hardcoded in the source.
+        src = open(server.__file__, encoding="utf-8").read()
+        self.assertNotIn(".gemini/antigravity", src)
+        if server.WHISPERCPP_DIR.startswith("/Users/"):
+            self.assertTrue(server.WHISPERCPP_DIR.startswith(os.path.expanduser("~")))
 
     def test_env_var_wins(self):
         with tempfile.TemporaryDirectory() as d:
@@ -86,8 +91,68 @@ class ModelDiscovery(unittest.TestCase):
                 del os.environ["WHISPER_MODEL"]
 
     def test_model_discovery_returns_none_when_absent(self):
-        # No env model + a bogus bin dir → nothing found (caller fails loudly).
-        self.assertIsNone(server.find_whisper_cpp_model("/nonexistent/bin/whisper-cli"))
+        # No env model + no model file anywhere → nothing found (caller fails
+        # loudly). Filesystem is mocked empty so a real ~/.cache install on the
+        # dev machine doesn't turn this into a false failure.
+        from unittest import mock
+        with mock.patch("os.path.exists", return_value=False):
+            self.assertIsNone(server.find_whisper_cpp_model("/nonexistent/bin/whisper-cli"))
+
+
+class StrictScreenShareGate(unittest.TestCase):
+    """No-roster mode must reject shared-screen app text that is shaped like a
+    name (window titles, dev-tool tabs, OCR case-noise) — the source of junk
+    'speakers' during screen-shares."""
+
+    def test_rejects_ui_window_titles(self):
+        for junk in ["Logs Table JSON", "Table Explorer", "Data Quality",
+                     "Operator Class", "Global Entity", "Loga Table USON"]:
+            self.assertFalse(ocr.is_person_name(junk, strict=True), junk)
+
+    def test_rejects_midtoken_capitals(self):
+        for junk in ["MangoDB Goland", "Alex RiverA", "Jordan SmitH XE"]:
+            self.assertFalse(ocr.is_person_name(junk, strict=True), junk)
+
+    def test_rejects_mixed_greek_latin_tokens(self):
+        self.assertFalse(ocr.is_person_name("TIp. Lúvoto", strict=True))
+
+    def test_rejects_long_dotted_token(self):
+        self.assertFalse(ocr.is_person_name("Jordan Bakerr.", strict=True))
+
+    def test_accepts_real_names_in_strict_mode(self):
+        for ok in ["Alex Rivera", "Άλφα Βήτα", "Anna-Maria Petrou", "Eleni K."]:
+            self.assertTrue(ocr.is_person_name(ok, strict=True), ok)
+
+    def test_lenient_mode_keeps_misread_frames_for_roster(self):
+        # With a roster, case-noise variants stay eligible so the fuzzy roster
+        # match can credit the frame to the real attendee.
+        self.assertTrue(ocr.is_person_name("Alex RiverA", strict=False))
+
+
+class FuzzyConsolidation(unittest.TestCase):
+    def test_ocr_misreads_merge_into_dominant_variant(self):
+        tl = [(i * 4.0, "Alex Riverra") for i in range(3)] + \
+             [(100 + i * 4.0, "Alex Rivera") for i in range(20)]
+        counts, canonical = ocr.consolidate_roster(sorted(tl))
+        self.assertEqual(canonical["Alex Riverra"], "Alex Rivera")
+        self.assertEqual(counts["Alex Rivera"], 23)
+
+    def test_distinct_people_sharing_first_name_stay_separate(self):
+        tl = [(i * 4.0, "Jordan Smith") for i in range(10)] + \
+             [(100 + i * 4.0, "Jordan Baker") for i in range(10)]
+        counts, canonical = ocr.consolidate_roster(sorted(tl))
+        self.assertEqual(canonical["Jordan Smith"], "Jordan Smith")
+        self.assertEqual(canonical["Jordan Baker"], "Jordan Baker")
+
+
+class BiasPrompt(unittest.TestCase):
+    def test_contains_attendees_and_terms(self):
+        p = server.whisper_bias_prompt("Alex Rivera, Sam Chen", "Salesforce, KYC")
+        self.assertIn("Alex Rivera", p)
+        self.assertIn("Salesforce", p)
+
+    def test_empty_inputs_produce_empty_prompt(self):
+        self.assertEqual(server.whisper_bias_prompt("", ""), "")
 
 
 class OverwriteGuard(unittest.TestCase):

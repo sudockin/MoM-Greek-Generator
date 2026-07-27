@@ -55,6 +55,41 @@ STOPWORDS = {
     "ask chat", "add tab", "file edit", "control panel", "delivery hero",
     "open questions", "next steps", "vendors domain", "google meet",
 }
+# Single tokens that mark app/doc text on a shared screen, never a person
+# ("Logs Table JSON", "Table Explorer", "Data Quality", ...). Compared on the
+# normalized (Latin) token; a short Greek list is compared on the raw lowercase.
+_UI_TOKENS = {
+    "json", "table", "tables", "logs", "log", "data", "explorer", "class",
+    "global", "operator", "quality", "entity", "settings", "error", "file",
+    "edit", "view", "chat", "tab", "panel", "dashboard", "query", "filter",
+    "export", "import", "menu", "search", "home", "admin", "login", "total",
+    "report", "overview", "summary", "meeting", "minutes", "agenda", "review",
+    "status", "update", "project", "roadmap", "backlog", "sprint", "vendor",
+    "console", "browser", "window", "untitled", "document", "sheet", "slide",
+}
+_GREEK_UI_TOKENS = {"σύνολο", "αναζήτηση", "αρχείο", "επεξεργασία", "προβολή",
+                    "ρυθμίσεις", "μενού", "σελίδα", "πίνακας"}
+
+
+def _mixed_script(tok):
+    """OCR garbage often fuses Greek and Latin letters in one token ('Tιp')."""
+    has_latin = any(c.isalpha() and "a" <= c.lower() <= "z" for c in tok)
+    has_greek = any("Ͱ" <= c <= "Ͽ" or "ἀ" <= c <= "῿" for c in tok)
+    return has_latin and has_greek
+
+
+def _strict_token_ok(tok):
+    """Extra shape rules used when NO roster vouches for names: reject acronyms
+    and OCR case-noise ('JSON', 'MangoDB', 'GkanatsidE') and non-initial dots
+    ('Gkanatcio.'). Hyphen/apostrophe parts are each checked ('Anna-Maria' ok)."""
+    if "." in tok:
+        if not (tok.endswith(".") and tok.count(".") == 1 and len(tok) <= 3):
+            return False
+        tok = tok[:-1]
+    for part in re.split(r"[-'’]", tok):
+        if any(c.isupper() for c in part[1:]):
+            return False
+    return True
 
 
 def normalize(s):
@@ -69,13 +104,18 @@ def strip_company_tag(s):
     return re.sub(r"\s*\([^)]*\)\s*$", "", (s or "").strip()).strip()
 
 
-def is_person_name(s, allow_single=False):
+def is_person_name(s, allow_single=False, strict=False):
     """Capitalised, letters-only name tokens (Latin or Greek); no digits/punctuation.
 
     Accepts 2–3 tokens by default; with allow_single=True also accepts a single
     first-name token (only safe when a roster vouches for it — see name_from_results).
     A trailing '(Company)' tag is stripped first. Uses Unicode-aware str methods
-    rather than a regex range so Greek caps work."""
+    rather than a regex range so Greek caps work.
+
+    strict=True (used when there is NO attendee roster) additionally applies
+    shape rules that separate people from shared-screen app text — see
+    _strict_token_ok. With a roster the fuzzy roster match is the gate instead,
+    so misread frames of a real attendee still count toward the right person."""
     s = strip_company_tag(s)
     toks = s.split()
     lo = 1 if allow_single else 2
@@ -87,6 +127,12 @@ def is_person_name(s, allow_single=False):
         if len(t) < 2 or not (t[0].isalpha() and t[0].isupper()):
             return False
         if not all(c.isalpha() or c in ".'’-" for c in t):
+            return False
+        if _mixed_script(t):
+            return False
+        if normalize(t) in _UI_TOKENS or t.lower().rstrip(".") in _GREEK_UI_TOKENS:
+            return False
+        if strict and not _strict_token_ok(t):
             return False
     return normalize(s) not in STOPWORDS
 
@@ -134,7 +180,9 @@ def name_from_results(results, roster_pairs=None):
             continue
         # Single-token first names are only trusted when a roster can vouch for them
         # (otherwise stray one-word UI labels would leak in) — so gate allow_single.
-        if not is_person_name(t, allow_single=bool(roster_pairs)):
+        # Without a roster the strict shape rules are the only defence against
+        # shared-screen app text, so they switch on exactly then.
+        if not is_person_name(t, allow_single=bool(roster_pairs), strict=not roster_pairs):
             continue
         right = x > RIGHT_TILE_MIN_X
         teams = x < TEAMS_MAX_X and y < TEAMS_MAX_Y
@@ -195,8 +243,24 @@ def build_name_timeline(video, step=4.0, progress=None, ffmpeg=None, roster_pair
     return timeline
 
 
+def _name_sim(a, b):
+    """Similarity of two OCR'd names. Latin-normalized when possible; raw
+    lowercase otherwise (normalize() strips Greek, which would make every pair
+    of Greek names compare as identical empty strings)."""
+    na, nb = normalize(a), normalize(b)
+    if na and nb:
+        return difflib.SequenceMatcher(None, na, nb).ratio()
+    return difflib.SequenceMatcher(None, a.lower(), b.lower()).ratio()
+
+
+# OCR misreads of the same tag ('Charalampos Ganatsios' / '...Gkanatsios') sit
+# well above this; different people (even sharing a first name) sit well below.
+MERGE_SIM = _envf("MOM_OCR_MERGE_SIM", 0.80)
+
+
 def consolidate_roster(timeline):
-    """Count names; merge a name that is a prefix of a longer one (label truncation)."""
+    """Count names; merge prefixes (label truncation) and near-duplicates (OCR
+    misreads) into the most frequently seen variant."""
     counts = collections.Counter(n for _, n in timeline)
     names = sorted(counts, key=lambda n: -counts[n])
     canonical = {}
@@ -204,7 +268,7 @@ def consolidate_roster(timeline):
     for n in names:
         merged = False
         for k in kept:
-            if k.startswith(n) or n.startswith(k):
+            if k.startswith(n) or n.startswith(k) or _name_sim(n, k) >= MERGE_SIM:
                 canonical[n] = k
                 counts[k] += counts[n]
                 merged = True
@@ -253,6 +317,18 @@ def assign_transcript(video, audio_json, step=4.0, ffmpeg=None, progress=None, r
         return text.strip(), {}, []
 
     counts, canonical = consolidate_roster(tl)
+    # Without a roster, a name seen in a single frame of a long meeting is OCR
+    # noise, not a person — drop it and let those moments carry over the last
+    # real speaker (same behaviour as a screen-share gap). Never applied when a
+    # roster vouches for names, and never if it would empty the timeline.
+    if not roster_pairs:
+        min_frames = int(_envf("MOM_OCR_MIN_FRAMES", 2))
+        weak = {c for c in {canonical.get(n, n) for n in counts} if counts[c] < min_frames}
+        kept_tl = [(t, n) for t, n in tl if canonical.get(n, n) not in weak]
+        if weak and kept_tl:
+            tl = kept_tl
+            for w in weak:
+                counts.pop(w, None)
     times = [t for t, _ in tl]
     names = [canonical.get(n, n) for _, n in tl]
 

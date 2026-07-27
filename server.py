@@ -147,6 +147,7 @@ Rules:
 - Use red/yellow/green status signals (🔴/🟡/🟢) for risk and priority.
 - Action Items MUST be a markdown table with columns: Action | Owner | Due | Status. Owner must be a name from the Attendees list or "⚠️ owner not stated".
 - Be faithful to the transcript; do not invent.
+- The transcript is machine-transcribed: English technical terms embedded in Greek speech may be phonetically garbled (e.g. a product name rendered as similar-sounding Greek). Restore the intended term when it is obvious from context; if unsure, keep the transcript wording.
 
 Transcript:
 __TRANSCRIPT__
@@ -449,7 +450,7 @@ def cleanup_incomplete_outputs():
         pass
 
 
-def run_pipeline(jid, src_path, language, model, attendees="", from_url=False):
+def run_pipeline(jid, src_path, language, model, attendees="", from_url=False, terms=""):
     job = JOBS[jid]
     try:
         tools = detect_all()
@@ -509,7 +510,8 @@ def run_pipeline(jid, src_path, language, model, attendees="", from_url=False):
         diarize = (not is_vid) and is_whisperx and bool(hf_token())
 
         emit(jid, {"type": "stage", "stage": "transcribe", "msg": "Transcribing with Whisper…"})
-        transcript_path = transcribe(jid, tools["whisper"], wav, outdir, language, diarize=diarize)
+        transcript_path = transcribe(jid, tools["whisper"], wav, outdir, language,
+                                     diarize=diarize, attendees=attendees, terms=terms)
         with open(transcript_path, "r", encoding="utf-8", errors="replace") as f:
             transcript = f.read().strip()
         if not transcript:
@@ -561,6 +563,7 @@ def run_pipeline(jid, src_path, language, model, attendees="", from_url=False):
         job["speaker_map"] = speaker_map
         job["model"] = model
         job["attendees"] = attendees
+        job["terms"] = terms
 
         # ---- Step 3: optional local English MoM (Ollama) ----
         # The speaker-labelled transcript is the primary product (for Gemini).
@@ -671,7 +674,27 @@ def segments_to_text(segs):
     return "\n".join(s["text"].strip() for s in segs if s.get("text")).strip()
 
 
-def transcribe(jid, whisper, wav, outdir, language, diarize=False):
+def whisper_bias_prompt(attendees="", terms=""):
+    """Initial prompt for whisper.cpp --prompt: biases decoding toward the real
+    attendee names and domain vocabulary, which is what fixes phonetic manglings
+    of English tech terms embedded in Greek speech (e.g. product names).
+    Kept short — whisper only uses ~224 tokens of initial context."""
+    parts = []
+    names = ", ".join(n.strip() for part in (attendees or "").replace("\n", ",").split(",")
+                      if part.strip() for n in [part])
+    words = ", ".join(t.strip() for part in (terms or "").replace("\n", ",").split(",")
+                      if part.strip() for t in [part])
+    if names:
+        parts.append("Συμμετέχοντες: " + names + ".")
+    if words:
+        parts.append("Ορολογία: " + words + ".")
+    if not parts:
+        return ""
+    return ("Επαγγελματική συνάντηση efood/Foody με αγγλικούς τεχνικούς όρους. "
+            + " ".join(parts))[:900]
+
+
+def transcribe(jid, whisper, wav, outdir, language, diarize=False, attendees="", terms=""):
     out_prefix = os.path.join(outdir, "transcript")
     if whisper["type"] == "whisperx":
         token = hf_token()
@@ -725,6 +748,10 @@ def transcribe(jid, whisper, wav, outdir, language, diarize=False):
         lang = language if (language and language != "auto") else "auto"
         cmd = [whisper["bin"], "-m", whisper["model"], "-f", wav,
                "-l", lang, "-t", "8", "-oj", "-of", cpp_prefix]
+        bias = whisper_bias_prompt(attendees, terms)
+        if bias:
+            cmd += ["--prompt", bias]
+            emit(jid, {"type": "log", "line": "Vocabulary bias active (attendees + key terms)"})
         dur = wav_duration(wav)
         seen = {"max": 0.0}
         # whisper.cpp prints "[00:00:11.000 --> 00:00:14.000]  text" per segment.
@@ -818,6 +845,7 @@ Write ALL values in clear, professional ENGLISH (translate any Greek).
 NEVER invent facts, names, numbers, dates or decisions — use only what is in the transcript.
 Owners of action items must be a person named in the transcript or the attendee list;
 if the owner is unclear write "⚠️ owner not stated" — never guess a name.
+The transcript is machine-transcribed: English technical terms embedded in Greek speech may be phonetically garbled (e.g. a product name rendered as similar-sounding Greek). Restore the intended term when it is obvious from context; if unsure, keep the transcript wording.
 Preserve the efood/Foody (local) vs DH/Central (global) ownership nuance.
 
 JSON schema (use exactly these keys; omit nothing — use [] or "" when empty):
@@ -1198,9 +1226,10 @@ class Handler(BaseHTTPRequestHandler):
         language = body.get("language", "el")
         model = body.get("model", "qwen2.5:7b")
         attendees = body.get("attendees", "")
+        terms = body.get("terms", "")
         jid = new_job(os.path.basename(path))
         t = threading.Thread(target=run_pipeline,
-                             args=(jid, path, language, model, attendees), daemon=True)
+                             args=(jid, path, language, model, attendees, False, terms), daemon=True)
         t.start()
         self._send(200, json.dumps({"job": jid}))
 
@@ -1284,9 +1313,10 @@ class Handler(BaseHTTPRequestHandler):
         language = body.get("language", "auto")
         model = body.get("model", "qwen2.5:7b")
         attendees = body.get("attendees", "")
+        terms = body.get("terms", "")
         jid = new_job(url)
         t = threading.Thread(target=run_pipeline,
-                             args=(jid, url, language, model, attendees, True), daemon=True)
+                             args=(jid, url, language, model, attendees, True, terms), daemon=True)
         t.start()
         self._send(200, json.dumps({"job": jid}))
 
@@ -1327,6 +1357,7 @@ class Handler(BaseHTTPRequestHandler):
         language = self.headers.get("X-Language", "el")
         model = self.headers.get("X-Model", "qwen2.5:7b")
         attendees = urllib.parse.unquote(self.headers.get("X-Attendees", ""))
+        terms = urllib.parse.unquote(self.headers.get("X-Terms", ""))
         length = int(self.headers.get("Content-Length", "0"))
         if length <= 0:
             self._send(400, json.dumps({"error": "empty upload"}))
@@ -1343,7 +1374,7 @@ class Handler(BaseHTTPRequestHandler):
                 f.write(chunk)
                 remaining -= len(chunk)
         jid = new_job(filename)
-        t = threading.Thread(target=run_pipeline, args=(jid, dst, language, model, attendees), daemon=True)
+        t = threading.Thread(target=run_pipeline, args=(jid, dst, language, model, attendees, False, terms), daemon=True)
         t.start()
         self._send(200, json.dumps({"job": jid}))
 
@@ -1693,6 +1724,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
       <div class="step-head"><span class="step-num">2</span> Meeting context</div>
       <label>Attendees <span class="hint">(recommended — locks speaker-name detection onto these people; comma or line separated)</span></label>
       <textarea id="attendees" rows="2" placeholder="e.g. Alex Rivera, Sam Chen, Jordan Lee"></textarea>
+      <div style="margin-top:12px">
+        <label>Key terms <span class="hint">(optional — product names, tools, jargon said in the call; helps the transcriber spell them right, e.g. Salesforce, KYC, street number)</span></label>
+        <textarea id="terms" rows="1" placeholder="e.g. Salesforce, Datastreams, Table Explorer, KYC"></textarea>
+      </div>
       <div class="row" style="margin-top:16px">
         <div>
           <label>Spoken language</label>
@@ -1953,7 +1988,7 @@ $('#go').onclick = async () => {
     beginRun('Reading local file…');
     const res = await fetch('/local', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ path, language:$('#lang').value, model:modelFor(), attendees:$('#attendees').value })
+      body: JSON.stringify({ path, language:$('#lang').value, model:modelFor(), attendees:$('#attendees').value, terms:$('#terms').value })
     });
     const d = await res.json();
     if(d.error){ alert(d.error); $('#go').disabled=false; stopTimer(); $('#progCard').classList.add('hidden'); return; }
@@ -1966,7 +2001,8 @@ $('#go').onclick = async () => {
     method:'POST', body: chosenFile,
     headers:{ 'X-Filename': encodeURIComponent(chosenFile.name),
               'X-Language': $('#lang').value, 'X-Model': modelFor(),
-              'X-Attendees': encodeURIComponent($('#attendees').value) }
+              'X-Attendees': encodeURIComponent($('#attendees').value),
+              'X-Terms': encodeURIComponent($('#terms').value) }
   });
   const { job } = await res.json();
   currentJob = job; localStorage.setItem('momJob', job);
@@ -1980,7 +2016,7 @@ $('#fetchBtn').onclick = async () => {
   beginRun('Downloading from link…');
   const res = await fetch('/fetch', {
     method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ url, language: $('#lang').value, model: modelFor(), attendees: $('#attendees').value })
+    body: JSON.stringify({ url, language: $('#lang').value, model: modelFor(), attendees: $('#attendees').value, terms: $('#terms').value })
   });
   const d = await res.json();
   if(d.error){ alert(d.error); $('#go').disabled=false; $('#fetchBtn').disabled=false; stopTimer(); return; }
