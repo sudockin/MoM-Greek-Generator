@@ -177,9 +177,3 @@ meeting content.
   language dropdown.
 - **Long meeting cut off** → the model context is 16k tokens (~1.5–2 hrs of
   speech). For longer recordings, ask for chunking to be enabled.
-
----
-
-<div align="center">
-<sub>Built for internal efood / Foody / Delivery Hero use · Apple-silicon Mac (M1–M4), ~15 GB free for one-time model downloads</sub>
-</div>
