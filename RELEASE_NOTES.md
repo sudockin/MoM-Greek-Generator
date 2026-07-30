@@ -1,4 +1,4 @@
-# 📝 MoM Generator — v1.1
+# 📝 MoM Generator — v1.2
 
 **Turn a meeting recording into a polished, English Minutes‑of‑Meeting email — even if the meeting was in Greek — without anything leaving your Mac.**
 
@@ -6,7 +6,33 @@ Drop in a Google Meet / Teams recording. Out comes a clean transcript that alrea
 
 ---
 
-## 🆕 What's new in v1.1 — speaker names that never fail silently
+## 🆕 What's new in v1.2 — the screen share makes it into the notes
+
+Meetings aren't only talk. When someone presents, **what was on screen is now part of the MoM** — and the transcript itself got noticeably sharper.
+
+### 🖥️ Shared screens, captured automatically
+
+- **Every distinct screen is saved.** The same on‑device pass that reads speaker names now spots when someone is sharing and saves one screenshot per screen — no clicking, no manual snipping. Showing the same dashboard again later doesn't create a duplicate.
+- **Cropped to the content, like Gemini's notes.** The floating speaker tile is trimmed away, so you get the slide or dashboard, not a picture of someone's face.
+- **You decide what appears.** A thumbnail strip on the results screen lets you untick anything that shouldn't reach the email.
+- **Placed in context.** Screenshots land inside the discussion point they belong to, captioned with the timestamp and who was presenting. Unmatched ones collect in a "Shared screens" section.
+- **Works both ways.** The offline MoM embeds the images directly; the Gemini prompt carries each screen's on‑screen text and opens the folder so you can drag the shots straight in.
+
+### 🎯 Sharper transcripts
+
+- **Key terms field.** Type the product names and jargon used in the call (`Salesforce`, `KYC`, …) and the transcriber is biased toward spelling them correctly instead of turning English terms into similar‑sounding Greek.
+- **Garbled terms get repaired.** The MoM prompts now instruct the model to restore obviously mangled technical terms — and to leave the wording alone when it isn't sure.
+- **No more junk speakers during screen‑shares.** Window titles and app text that merely *looked* like names ("Logs Table JSON", "Table Explorer") no longer become participants, and OCR misspellings of a real name merge into one person.
+- **Faster again.** Fixed a regression where a portability change could make the app quietly fall back to the slow CPU transcriber. A 45‑minute meeting runs end‑to‑end in a few minutes on the GPU path.
+
+### ✏️ Also
+
+- The minutes now address the **efood / Foody** teams.
+- **43 automated tests** cover the capture, cropping and naming logic.
+
+---
+
+## 🗒️ Previously in v1.1 — speaker names that never fail silently
 
 v1.0 could quietly produce a **nameless** transcript when on‑screen speaker naming (OCR) hit a snag — and you'd only find out after the run. v1.1 makes naming **loud, robust, and easier to get right**.
 
@@ -22,22 +48,13 @@ v1.0 could quietly produce a **nameless** transcript when on‑screen speaker na
 
 ---
 
-## 🖥️ Shared screens — presentations become part of the notes
-
-When someone presents, the MoM now includes **what was on screen**, not just what was said.
-
-- **Automatic capture.** Every distinct screen shared during the call is saved as a screenshot — no clicking, no manual snipping. Re‑showing the same dashboard later doesn't create duplicates.
-- **Cropped like Gemini's notes.** Shots are trimmed to the presented content — the floating speaker tile and meeting chrome are cut out.
-- **You choose what appears.** A thumbnail strip on the results screen lets you untick anything that shouldn't reach the email.
-- **Placed in context.** Screenshots land inside the discussion point they belong to, captioned with the timestamp and who was presenting.
-- **Both routes.** The offline MoM embeds the images directly; the Gemini prompt carries each screen's on‑screen text and opens the folder so you can drag the shots in.
-
 ## ✨ Why people like it
 
 - **Greek in → English out.** Records in Greek, writes the minutes in clear business English.
 - **Knows who spoke.** Reads the active‑speaker name straight off the video (Apple Vision OCR) and labels every line — no accounts, no tokens, real names only.
 - **Fast.** Transcription runs on your Mac's GPU (whisper.cpp · large‑v3‑turbo) — a 40‑minute meeting is done in a few minutes.
 - **Beautiful, consistent output.** Every MoM comes out in the same styled email format — title, attendee chips, "Latest status", discussion cards, and colour‑coded ✅ / 🔄 / 🛑 / ⬜ action items.
+- **Shows what was presented.** Shared screens are captured, cropped and placed next to the discussion they belong to.
 - **100% private.** Audio, transcript, and minutes never leave the laptop.
 
 ## 🚦 Two ways to write the MoM — you pick per meeting
@@ -52,9 +69,10 @@ Both produce the **same email styling** — only where the thinking happens chan
 
 ## 🖥️ The app
 
-- **Guided 1‑2‑3 flow:** ① choose a recording (drag‑drop *or* paste a local file path) → ② add attendees & context → ③ Generate.
+- **Guided 1‑2‑3 flow:** ① choose a recording (drag‑drop *or* paste a local file path) → ② add attendees, key terms & context → ③ Generate.
 - **Clear progress:** live "Extracting audio → Transcribing → Reading speaker names" stages with elapsed time.
 - **Review speaker names** panel with autocomplete from your attendee list — fix any label in one click.
+- **Shared screens strip:** tick the captures that belong in the email.
 - **Result actions that make sense:** **Copy for Gmail** front and centre, plus Download, Save as PDF, and Open folder.
 - **Fresh light‑first design** in the efood palette.
 
@@ -83,5 +101,6 @@ Apple‑silicon Mac (M1–M4), ~15 GB free for the one‑time model downloads. B
 
 | Version | Date | Highlights |
 |---|---|---|
+| **v1.2** | 2026‑07‑30 | Shared‑screen capture — distinct screens saved automatically, cropped to the presented content (speaker tile removed), picked from a thumbnail strip, embedded under the matching discussion point in the offline MoM and described in the Gemini prompt. Sharper transcripts: "Key terms" vocabulary bias, garbled‑term repair, no junk speakers from screen‑share text, OCR misspellings merged. Fixed a silent fallback to the slow CPU transcriber. MoM audience is efood/Foody. 43 tests. |
 | **v1.1** | 2026‑07‑09 | Loud speaker‑naming (no silent failures); OCR decoupled from WhisperX (works on the whisper.cpp fast path); removed hardcoded path + auto‑discovery; job‑start capability preflight; keep segmented transcript on 0‑name runs; wider name capture (single first names, `Name (Company)`, `MOM_OCR_*` tuning); `--self-check`; unit tests. |
 | **v1.0** | 2026‑07‑01 | First release — local Greek→English Minutes‑of‑Meeting: recording → whisper.cpp/WhisperX → on‑screen speaker naming (OCR) → Greek transcript → styled MoM (Gemini prompt or offline local model). Guided UI, speaker‑review panel, Copy‑for‑Gmail. |

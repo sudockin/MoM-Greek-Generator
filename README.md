@@ -16,7 +16,7 @@
 
 <br>
 
-<img src="screenshots/app-ui.svg" alt="MoM Generator UI — guided 1-2-3 flow: choose a recording, add meeting context, generate" width="760">
+<img src="screenshots/app-ready.png" alt="MoM Generator UI — guided 1-2-3 flow: choose a recording, add meeting context, generate" width="760">
 
 <sub>The guided flow: ① choose a recording → ② add attendees & context → ③ Generate.</sub>
 
@@ -53,11 +53,11 @@ Recording a call is easy; turning it into shareable minutes is the slog — espe
 - 🔒 **Private by construction.** Audio, transcript, and minutes never leave the laptop. The only network access is the one-time setup download.
 - 🖥️ **No terminal required.** Two double-clicks: install, then run. Opens in your browser.
 
-> **📸 The screenshot above** is a self-contained vector reproduction of the live UI
-> ([`screenshots/app-ui.svg`](screenshots/app-ui.svg)) — it always renders on GitHub, no
-> capture step needed. Prefer a real raster screengrab? Run
-> [`./screenshots/capture.command`](screenshots/) to save `screenshots/app-ready.png` and
-> swap it in. Refreshed each release.
+> **📸 The screenshot above** is a real capture of the running app
+> ([`screenshots/app-ready.png`](screenshots/app-ready.png)), refreshed each release by
+> [`./screenshots/capture.command`](screenshots/) — which also archives a versioned copy
+> (`app-v1.2.png`). A hand-drawn vector fallback lives at
+> [`screenshots/app-ui.svg`](screenshots/app-ui.svg).
 
 ---
 
