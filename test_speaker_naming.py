@@ -162,7 +162,7 @@ class ScreenCapture(unittest.TestCase):
 
     def test_tracker_one_screen_per_slide(self):
         saved = []
-        tr = ocr.ScreenTracker(4.0, lambda idx, num: (saved.append(idx) or f"screen-{num:02d}.jpg"))
+        tr = ocr.ScreenTracker(4.0, lambda idx, num, crop=None: (saved.append(idx) or f"screen-{num:02d}.jpg"))
         for i in range(5):            # slide A for 20s
             tr.feed(i, _boxes(_SLIDE_A))
         for i in range(5, 8):         # camera break
@@ -177,7 +177,7 @@ class ScreenCapture(unittest.TestCase):
         self.assertIn("Quarterly metrics", screens[0]["text"])
 
     def test_tracker_splits_on_content_change_without_gap(self):
-        tr = ocr.ScreenTracker(4.0, lambda idx, num: f"s{num}.jpg")
+        tr = ocr.ScreenTracker(4.0, lambda idx, num, crop=None: f"s{num}.jpg")
         for i in range(4):
             tr.feed(i, _boxes(_SLIDE_A))
         for i in range(4, 8):         # slide flips directly to B
@@ -185,7 +185,7 @@ class ScreenCapture(unittest.TestCase):
         self.assertEqual(len(tr.finish()), 2)
 
     def test_tracker_ignores_camera_only_meeting(self):
-        tr = ocr.ScreenTracker(4.0, lambda idx, num: f"s{num}.jpg")
+        tr = ocr.ScreenTracker(4.0, lambda idx, num, crop=None: f"s{num}.jpg")
         for i in range(30):
             tr.feed(i, _boxes(_CAMERA))
         self.assertEqual(tr.finish(), [])
@@ -193,7 +193,7 @@ class ScreenCapture(unittest.TestCase):
     def test_noisy_or_scrolling_screen_stays_one_shot(self):
         # Same dashboard, OCR noise + scrolling: ~40% of lines differ per frame
         # but most words survive — must NOT fragment into one shot per frame.
-        tr = ocr.ScreenTracker(4.0, lambda idx, num: f"s{num}.jpg")
+        tr = ocr.ScreenTracker(4.0, lambda idx, num, crop=None: f"s{num}.jpg")
         base = [f"grafana explore logs panel row {i} error failed timeout" for i in range(10)]
         for f in range(12):
             noisy = list(base)
@@ -203,14 +203,14 @@ class ScreenCapture(unittest.TestCase):
         self.assertEqual(len(tr.finish()), 1)
 
     def test_single_frame_blip_dropped(self):
-        tr = ocr.ScreenTracker(4.0, lambda idx, num: f"s{num}.jpg")
+        tr = ocr.ScreenTracker(4.0, lambda idx, num, crop=None: f"s{num}.jpg")
         tr.feed(0, _boxes(_CAMERA))
         tr.feed(1, _boxes(_SLIDE_A))   # 4-second flash during app switching
         tr.feed(2, _boxes(_CAMERA))
         self.assertEqual(tr.finish(), [])
 
     def test_same_screen_resurfacing_extends_not_duplicates(self):
-        tr = ocr.ScreenTracker(4.0, lambda idx, num: f"s{num}.jpg")
+        tr = ocr.ScreenTracker(4.0, lambda idx, num, crop=None: f"s{num}.jpg")
         for i in range(4):
             tr.feed(i, _boxes(_SLIDE_A))
         for i in range(4, 7):
@@ -220,6 +220,123 @@ class ScreenCapture(unittest.TestCase):
         screens = tr.finish()
         self.assertEqual(len(screens), 1)
         self.assertEqual(screens[0]["frames"], 8)
+
+
+class ContentCrop(unittest.TestCase):
+    """Screenshots crop to the presented area (like Gemini notes): union of
+    central text boxes, excluding speaker-tile name tags."""
+
+    def test_crop_excludes_speaker_name_tag(self):
+        rects = [(0.05 + 0.02 * i, 0.3 + 0.04 * i, 0.5, 0.02, f"content line {i} here")
+                 for i in range(8)]
+        rects.append((0.80, 0.05, 0.12, 0.02, "Alex Rivera"))  # floating tile tag
+        box = ocr.content_crop_box(rects)
+        self.assertIsNotNone(box)
+        x0, y0, x1, y1 = box
+        self.assertLess(x1, 0.80)   # speaker tile area excluded
+        self.assertGreater(y1, 0.5)
+
+    def test_fullwidth_chrome_still_clamps_at_tile_tag(self):
+        # Browser chrome spans the full width BEHIND the floating tile; the
+        # tile's name tag (right zone) must still clamp the crop's right edge.
+        rects = [(0.02, 0.95, 0.95, 0.02, "browser tab bar spanning everything wide")]
+        rects += [(0.05, 0.3 + 0.05 * i, 0.6, 0.02, f"content line {i} here") for i in range(7)]
+        rects.append((0.76, 0.38, 0.12, 0.02, "Alex Rivera"))
+        x0, y0, x1, y1 = ocr.content_crop_box(rects)
+        self.assertLessEqual(x1, 0.76)
+
+    def test_global_tile_edge_clamps_when_tag_unreadable_in_that_frame(self):
+        # The representative frame's own tag is garbled, but the tile edge was
+        # seen in other frames — the crop must still exclude the tile.
+        crops = []
+        tr = ocr.ScreenTracker(4.0, lambda idx, num, crop=None: (
+            crops.append(crop) or f"s{num}.jpg"))
+        content = [(0.05, 0.3 + 0.05 * i, 0.6, 0.02, f"content line {i} here")
+                   for i in range(7)]
+        chrome = [(0.02, 0.95, 0.95, 0.02, "browser tab bar spanning full width")]
+        legible = content + chrome + [(0.76, 0.38, 0.12, 0.02, "Alex Rivera")]
+        garbled = content + chrome + [(0.76, 0.38, 0.12, 0.02, "Al3x RiverA/")]
+        # 5 frames, the middle (representative) one garbled — the tile edge is
+        # still known from the others.
+        for i, rects in enumerate([legible, legible, garbled, legible, legible]):
+            tr.feed(i, [(t, 0.9, (x, y, w, h)) for x, y, w, h, t in rects])
+        tr.finish()
+        self.assertEqual(tr.tile_edge(), 0.76)
+        self.assertIsNotNone(crops[0])
+        self.assertLessEqual(crops[0][2], 0.76)
+
+    def test_grid_view_tags_do_not_drag_tile_estimate(self):
+        # Camera-grid frames (no share) have participant tags at unrelated
+        # positions — they must not lower the tile-edge estimate and over-crop.
+        tr = ocr.ScreenTracker(4.0, lambda idx, num, crop=None: f"s{num}.jpg")
+        grid = [(0.62, 0.5, 0.1, 0.02, "Sam Chen"), (0.65, 0.2, 0.1, 0.02, "Lee Park")]
+        share = [(0.05, 0.3 + 0.05 * i, 0.6, 0.02, f"content line {i} here")
+                 for i in range(7)] + [(0.78, 0.38, 0.12, 0.02, "Alex Rivera")]
+        for i, rects in enumerate([grid, grid, share, share, share, share, grid]):
+            tr.feed(i, [(t, 0.9, (x, y, w, h)) for x, y, w, h, t in rects])
+        tr.finish()
+        self.assertEqual(tr.tile_edge(), 0.78)
+
+    def test_tile_edge_uses_mode_not_median(self):
+        # The tile tag repeats at ~0.78; names inside the shared content
+        # (customer names in a log) scatter lower. The estimate must be the
+        # repeated tile position, not the median of everything.
+        tr = ocr.ScreenTracker(4.0, lambda idx, num, crop=None: f"s{num}.jpg")
+        content = [(0.05, 0.3 + 0.05 * i, 0.6, 0.02, f"content line {i} here")
+                   for i in range(7)]
+        scatter = ["Sam Chen", "Lee Park", "Ana Torres", "Nia Blake", "Omar Diaz"]
+        for i in range(10):
+            rects = list(content) + [(0.78, 0.38, 0.12, 0.02, "Alex Rivera")]
+            # a different content name at a different right-zone x each frame
+            rects.append((0.61 + 0.01 * i, 0.55, 0.1, 0.02, scatter[i % 5]))
+            tr.feed(i, [(t, 0.9, (x, y, w, h)) for x, y, w, h, t in rects])
+        tr.finish()
+        self.assertAlmostEqual(tr.tile_edge(), 0.78, places=2)
+
+    def test_static_browser_chrome_is_not_mistaken_for_the_tile(self):
+        # Regression: a bookmarks bar ("Work", "Vault", "Prod") sits at a FIXED
+        # x in every frame, so single-word labels made a perfect false mode and
+        # over-cropped every screenshot. Only real 2-3 token tags in the tile
+        # zone, below the chrome, may set the edge.
+        tr = ocr.ScreenTracker(4.0, lambda idx, num, crop=None: f"s{num}.jpg")
+        content = [(0.05, 0.3 + 0.05 * i, 0.6, 0.02, f"content line {i} here")
+                   for i in range(7)]
+        chrome = [(0.66, 0.93, 0.03, 0.015, "Work"),
+                  (0.70, 0.93, 0.03, 0.015, "Vault"),
+                  (0.74, 0.93, 0.03, 0.015, "Prod")]
+        for i in range(8):
+            rects = content + chrome + [(0.80, 0.38, 0.12, 0.02, "Alex Rivera")]
+            tr.feed(i, [(t, 0.9, (x, y, w, h)) for x, y, w, h, t in rects])
+        tr.finish()
+        self.assertAlmostEqual(tr.tile_edge(), 0.80, places=2)
+
+    def test_tile_edge_none_without_stable_position(self):
+        tr = ocr.ScreenTracker(4.0, lambda idx, num, crop=None: f"s{num}.jpg")
+        content = [(0.05, 0.3 + 0.05 * i, 0.6, 0.02, f"content line {i} here")
+                   for i in range(7)]
+        for i in range(3):  # every name at a different x, none repeating
+            rects = list(content) + [(0.62 + 0.06 * i, 0.5, 0.1, 0.02, "Sam Chen")]
+            tr.feed(i, [(t, 0.9, (x, y, w, h)) for x, y, w, h, t in rects])
+        tr.finish()
+        self.assertIsNone(tr.tile_edge())
+
+    def test_stray_content_name_does_not_override_global_edge(self):
+        # A person's name inside the shared document must not crop the frame;
+        # the meeting-wide tile estimate wins.
+        rects = [(0.05, 0.3 + 0.05 * i, 0.6, 0.02, f"content line {i} here")
+                 for i in range(7)]
+        rects.append((0.63, 0.5, 0.1, 0.02, "Sam Chen"))  # stray name in the doc
+        x0, y0, x1, y1 = ocr.content_crop_box(rects, tile_x=0.78)
+        self.assertGreater(x1, 0.63)
+        self.assertLessEqual(x1, 0.78)
+
+    def test_sparse_text_keeps_full_frame(self):
+        rects = [(0.4, 0.5, 0.2, 0.02, "big chart"), (0.4, 0.4, 0.2, 0.02, "one label")]
+        self.assertIsNone(ocr.content_crop_box(rects))
+
+    def test_tiny_union_keeps_full_frame(self):
+        rects = [(0.40, 0.50, 0.05, 0.01, f"word {i}") for i in range(6)]
+        self.assertIsNone(ocr.content_crop_box(rects))
 
 
 class BiasPrompt(unittest.TestCase):
