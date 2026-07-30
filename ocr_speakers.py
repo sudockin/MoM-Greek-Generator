@@ -66,6 +66,7 @@ _UI_TOKENS = {
     "report", "overview", "summary", "meeting", "minutes", "agenda", "review",
     "status", "update", "project", "roadmap", "backlog", "sprint", "vendor",
     "console", "browser", "window", "untitled", "document", "sheet", "slide",
+    "external", "ids", "internal", "details", "results", "options",
 }
 _GREEK_UI_TOKENS = {"σύνολο", "αναζήτηση", "αρχείο", "επεξεργασία", "προβολή",
                     "ρυθμίσεις", "μενού", "σελίδα", "πίνακας"}
@@ -215,8 +216,127 @@ def _ocr_one(path):
         return []
 
 
-def build_name_timeline(video, step=4.0, progress=None, ffmpeg=None, roster_pairs=None):
-    """Return sorted [(timestamp_seconds, name)] sampled every `step` seconds.
+# ---------------------------------------------------------------------------
+# Shared-screen capture: reuse the same OCR pass to detect when someone is
+# presenting, split the share into distinct "screens" (slide/page changes),
+# and save one representative frame per screen for the MoM.
+# ---------------------------------------------------------------------------
+SHARE_MIN_BOXES = int(_envf("MOM_SCREEN_MIN_BOXES", 8))    # text lines mid-frame
+SHARE_MIN_CHARS = int(_envf("MOM_SCREEN_MIN_CHARS", 120))  # total chars mid-frame
+SCREEN_NEW_SIM = _envf("MOM_SCREEN_NEW_SIM", 0.3)          # below → a new screen
+SCREEN_MIN_FRAMES = int(_envf("MOM_SCREEN_MIN_FRAMES", 2)) # ignore 1-frame blips
+SCREEN_MAX = int(_envf("MOM_SCREEN_MAX", 40))              # capture cap per meeting
+
+
+_WORD_RE = re.compile(r"[A-Za-zΑ-Ωα-ωΆ-ώ]{3,}")
+
+
+def _frame_text_stats(results):
+    """(central_text_boxes, total_chars, signature_set, lines) for one frame.
+
+    A camera-grid frame has a handful of short name tags; a shared screen has
+    many text lines spread across the middle of the frame. The signature is a
+    WORD set (letters-only, len>=3) — robust to OCR noise and to digit-heavy
+    content (timestamps, log lines) that differs on every read of the same
+    screen."""
+    sig, lines, chars, boxes = set(), [], 0, 0
+    for text, conf, (x, y, w, h) in results:
+        t = (text or "").strip()
+        if conf < 0.3 or len(t) < 2:
+            continue
+        cx, cy = x + w / 2.0, y + h / 2.0
+        if 0.03 <= cx <= 0.97 and 0.05 <= cy <= 0.97:
+            boxes += 1
+            chars += len(t)
+            lines.append(t)
+            sig.update(w.lower() for w in _WORD_RE.findall(t))
+    return boxes, chars, sig, lines
+
+
+def _sig_sim(a, b):
+    """Jaccard similarity of two frame text signatures (0..1)."""
+    if not a or not b:
+        return 0.0
+    return len(a & b) / float(len(a | b))
+
+
+def is_share_frame(results):
+    boxes, chars, _, _ = _frame_text_stats(results)
+    return boxes >= SHARE_MIN_BOXES and chars >= SHARE_MIN_CHARS
+
+
+class ScreenTracker:
+    """Feed one frame at a time; groups consecutive similar share-frames into
+    screens and saves ONE representative frame per screen via save_fn.
+
+    Similarity is measured against the PREVIOUS frame in the run (not the
+    first), so slowly scrolling content — a log viewer, a long doc — stays one
+    screen instead of fragmenting. Runs shorter than SCREEN_MIN_FRAMES are
+    treated as transition blips and dropped, and a new run that still looks
+    like the last SAVED screen (app switch and back) extends it rather than
+    producing a near-duplicate shot.
+
+    save_fn(frame_index, screen_number) -> saved filename (or None to skip);
+    injected so the pure segmentation logic is testable without files."""
+
+    def __init__(self, step, save_fn):
+        self.step = step
+        self.save_fn = save_fn
+        self.screens = []
+        self._run = None        # {"sig","start","frames":[(idx, lines)]}
+        self._saved_sigs = []   # word signature per SAVED screen (same order)
+
+    def feed(self, idx, results):
+        t = idx * self.step
+        boxes, chars, sig, lines = _frame_text_stats(results)
+        share = boxes >= SHARE_MIN_BOXES and chars >= SHARE_MIN_CHARS
+        if share and self._run is not None and _sig_sim(sig, self._run["sig"]) >= SCREEN_NEW_SIM:
+            self._run["sig"] = sig  # rolling: compare each frame to its neighbour
+            self._run["frames"].append((idx, lines))
+            return
+        self._close()
+        if share:
+            self._run = {"sig": sig, "start": t, "frames": [(idx, lines)]}
+
+    def _close(self):
+        run = self._run
+        self._run = None
+        if not run or len(self.screens) >= SCREEN_MAX:
+            return
+        frames = run["frames"]
+        if len(frames) < SCREEN_MIN_FRAMES:
+            return
+        mid_idx, mid_lines = frames[len(frames) // 2]
+        # The same app/screen resurfacing later in the meeting extends the shot
+        # already saved for it (most recent match wins) instead of duplicating.
+        for si in range(len(self._saved_sigs) - 1, -1, -1):
+            if _sig_sim(run["sig"], self._saved_sigs[si]) >= SCREEN_NEW_SIM:
+                self.screens[si]["end"] = frames[-1][0] * self.step
+                self.screens[si]["frames"] += len(frames)
+                return
+        fname = self.save_fn(mid_idx, len(self.screens) + 1)
+        if not fname:
+            return
+        self._saved_sigs.append(run["sig"])
+        self.screens.append({
+            "file": fname,
+            "t": mid_idx * self.step,
+            "start": run["start"],
+            "end": frames[-1][0] * self.step,
+            "frames": len(frames),
+            "text": "\n".join(mid_lines[:60])[:1500],
+        })
+
+    def finish(self):
+        self._close()
+        return self.screens
+
+
+def build_name_timeline(video, step=4.0, progress=None, ffmpeg=None, roster_pairs=None,
+                        screens_dir=None):
+    """Return (sorted [(timestamp_seconds, name)], screens) sampled every `step`
+    seconds. `screens` is [] unless screens_dir is given, in which case one
+    representative JPEG per detected shared screen is saved there.
 
     OCR runs across frames in parallel (Apple Vision releases the GIL), which is
     the bulk of the wall-clock time on long meetings."""
@@ -230,17 +350,36 @@ def build_name_timeline(video, step=4.0, progress=None, ffmpeg=None, roster_pair
         frames = sorted(f for f in os.listdir(tmp) if f.endswith(".jpg"))
         n = len(frames)
         paths = [os.path.join(tmp, fn) for fn in frames]
+
+        tracker = None
+        if screens_dir:
+            os.makedirs(screens_dir, exist_ok=True)
+
+            def save_frame(idx, num):
+                src = paths[idx]
+                fname = f"screen-{num:02d}-t{int(idx * step)}s.jpg"
+                try:
+                    import shutil as _sh
+                    _sh.copyfile(src, os.path.join(screens_dir, fname))
+                    return fname
+                except OSError:
+                    return None
+            tracker = ScreenTracker(step, save_frame)
+
         done = 0
         with concurrent.futures.ThreadPoolExecutor(max_workers=6) as ex:
             for i, res in enumerate(ex.map(_ocr_one, paths)):
                 name = name_from_results(res, roster_pairs)
                 if name:
                     timeline.append((i * step, name))
+                if tracker:
+                    tracker.feed(i, res)
                 done += 1
                 if progress and done % 25 == 0:
                     progress(done, n)
+        screens = tracker.finish() if tracker else []
     timeline.sort()
-    return timeline
+    return timeline, screens
 
 
 def _name_sim(a, b):
@@ -302,19 +441,21 @@ def map_speakers(diar_segments, timeline, canonical=None):
 UNKNOWN = "Speaker (unknown)"
 
 
-def assign_transcript(video, audio_json, step=4.0, ffmpeg=None, progress=None, roster_pairs=None):
+def assign_transcript(video, audio_json, step=4.0, ffmpeg=None, progress=None,
+                      roster_pairs=None, screens_dir=None):
     """Token-free speaker attribution: label each transcript segment with the
-    on-screen active-speaker name (no diarization needed).
+    on-screen active-speaker name (no diarization needed). When screens_dir is
+    given, also captures one JPEG per distinct shared screen.
 
-    Returns (transcript_text, roster_dict, speakers_list)."""
-    tl = build_name_timeline(video, step=step, ffmpeg=ffmpeg, progress=progress,
-                             roster_pairs=roster_pairs)
+    Returns (transcript_text, roster_dict, speakers_list, screens_list)."""
+    tl, screens = build_name_timeline(video, step=step, ffmpeg=ffmpeg, progress=progress,
+                                      roster_pairs=roster_pairs, screens_dir=screens_dir)
     with open(audio_json, "r", encoding="utf-8") as f:
         segs = json.load(f).get("segments", [])
 
     if not tl:  # no on-screen names found (e.g. not a video call) -> plain transcript
         text = " ".join((s.get("text") or "").strip() for s in segs if s.get("text"))
-        return text.strip(), {}, []
+        return text.strip(), {}, [], screens
 
     counts, canonical = consolidate_roster(tl)
     # Without a roster, a name seen in a single frame of a long meeting is OCR
@@ -362,7 +503,12 @@ def assign_transcript(video, audio_json, step=4.0, ffmpeg=None, progress=None, r
     for n, _ in blocks:
         if n not in speakers:
             speakers.append(n)
-    return transcript, roster, speakers
+    # Who was presenting each captured screen: the active speaker at its time
+    # (carry-over semantics, same as transcript labelling).
+    for sc in screens:
+        idx = bisect.bisect_right(times, sc["t"]) - 1
+        sc["presenter"] = names[idx] if 0 <= idx < len(names) else ""
+    return transcript, roster, speakers, screens
 
 
 def main():
@@ -373,6 +519,8 @@ def main():
     ap.add_argument("--ffmpeg", default=None)
     ap.add_argument("--roster", default="",
                     help="attendee list (comma/newline separated) to lock OCR onto real names")
+    ap.add_argument("--screens-dir", default="",
+                    help="also capture one JPEG per distinct shared screen into this dir")
     ap.add_argument("--json", action="store_true", help="emit mapping+roster as JSON to stdout")
     ap.add_argument("--name-transcript", action="store_true",
                     help="token-free: label each segment of the given audio.json by on-screen name")
@@ -382,14 +530,17 @@ def main():
     roster_pairs = parse_roster(args.roster)
 
     if args.name_transcript:
-        transcript, roster, speakers = assign_transcript(
+        transcript, roster, speakers, screens = assign_transcript(
             args.video, args.diarization, step=args.step, ffmpeg=args.ffmpeg,
-            progress=prog, roster_pairs=roster_pairs)
-        print(json.dumps({"transcript": transcript, "roster": roster, "speakers": speakers}))
+            progress=prog, roster_pairs=roster_pairs,
+            screens_dir=args.screens_dir or None)
+        print(json.dumps({"transcript": transcript, "roster": roster,
+                          "speakers": speakers, "screens": screens}))
         return
 
-    tl = build_name_timeline(args.video, step=args.step, ffmpeg=args.ffmpeg,
-                             progress=prog, roster_pairs=roster_pairs)
+    tl, _ = build_name_timeline(args.video, step=args.step, ffmpeg=args.ffmpeg,
+                                progress=prog, roster_pairs=roster_pairs,
+                                screens_dir=args.screens_dir or None)
     counts, canonical = consolidate_roster(tl)
 
     if args.json:

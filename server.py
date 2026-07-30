@@ -13,6 +13,7 @@ file works on any colleague's Mac once they've run setup.sh.
 Run:  python3 server.py          (opens http://127.0.0.1:8765 in your browser)
 """
 
+import base64
 import html
 import json
 import os
@@ -43,7 +44,31 @@ GEMINI_PROMPT_FILE = os.path.join(APP_DIR, "Gemini MoM Prompt.md")
 VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"}
 
 
-def gemini_prompt(transcript=""):
+def fmt_ts(seconds):
+    """Seconds -> 'mm:ss' (or 'h:mm:ss' past the hour)."""
+    s = int(seconds or 0)
+    if s >= 3600:
+        return f"{s // 3600}:{(s % 3600) // 60:02d}:{s % 60:02d}"
+    return f"{s // 60:02d}:{s % 60:02d}"
+
+
+def screens_prompt_block(screens):
+    """Describe the captured shared screens (timestamp, presenter, on-screen text)
+    for either MoM route. The actual JPEGs live in the job's screenshots/ folder."""
+    if not screens:
+        return ""
+    lines = ["\nSCREENS SHARED DURING THE MEETING (screenshots captured from the "
+             "recording; on-screen text below was OCR'd automatically):"]
+    for i, sc in enumerate(screens, 1):
+        who = f" — shared while {sc.get('presenter')} was speaking" if sc.get("presenter") else ""
+        lines.append(f"[SCREEN {i}: {sc.get('file')} @ {fmt_ts(sc.get('t'))}{who}]")
+        txt = (sc.get("text") or "").strip()
+        if txt:
+            lines.append(txt[:700])
+    return "\n".join(lines) + "\n"
+
+
+def gemini_prompt(transcript="", screens=None):
     """The reusable Gemini styling prompt (between the ===== markers in the .md),
     with the transcript spliced in. Falls back to a tiny built-in if the file is
     missing so the button never breaks."""
@@ -62,7 +87,17 @@ def gemini_prompt(transcript=""):
         body = ("Turn the transcript below into a polished English Minutes-of-Meeting "
                 "follow-up email as one block of inline-styled HTML for Gmail. Translate "
                 "any Greek. Never invent names or facts.\n\nTRANSCRIPT:\n<<<TRANSCRIPT>>>")
-    return body.replace("<<<TRANSCRIPT>>>", transcript or "<paste transcript here>")
+    block = screens_prompt_block(screens)
+    if block:
+        block += ("\nI am ATTACHING these screenshots to this chat. Use them (plus their "
+                  "OCR'd text) as meeting context. Inside the discussion point where each "
+                  "screen belongs, insert a placeholder card so I can drop the real image "
+                  "in when I paste into Gmail:\n"
+                  '<div style="border:1px dashed rgb(203,213,225);border-radius:8px;'
+                  "padding:14px;text-align:center;color:rgb(100,116,139);font-size:13px;"
+                  'margin:12px 0">[ insert SCREEN k here — file-name.jpg ]</div>\n')
+    out = body.replace("<<<TRANSCRIPT>>>", transcript or "<paste transcript here>")
+    return out + block
 
 # YouTube/link download is an OPTIONAL, personal-use add-on kept in a separate
 # module that the shared build omits. If youtube.py is absent, the feature is off.
@@ -523,12 +558,19 @@ def run_pipeline(jid, src_path, language, model, attendees="", from_url=False, t
         # For ANY video (regardless of transcription engine) we OCR the on-screen
         # active-speaker name and label each segment — token-free. The attendee
         # list is used as a roster to lock OCR onto real names (Google Meet).
-        speakers, roster, speaker_map = [], {}, {}
+        speakers, roster, speaker_map, screens = [], {}, {}, []
         if is_vid:
             emit(jid, {"type": "stage", "stage": "names", "msg": "Reading on-screen speaker names…"})
-            named, roster, speakers = ocr_name_transcript(
+            named, roster, speakers, screens = ocr_name_transcript(
                 src_path, os.path.join(outdir, "audio.json"), tools["ffmpeg"],
-                jid=jid, roster=attendees, ocr_python=ocr_py)
+                jid=jid, roster=attendees, ocr_python=ocr_py,
+                screens_dir=os.path.join(outdir, "screenshots"))
+            if screens:
+                # Persist so disk-resumed results keep their screenshots too.
+                with open(os.path.join(outdir, "screens.json"), "w", encoding="utf-8") as f:
+                    json.dump(screens, f, ensure_ascii=False)
+                job["screens"] = screens
+                emit(jid, {"type": "screens", "screens": screens})
             # Only overwrite the segmented transcript when names were ACTUALLY
             # applied (speakers non-empty). A zero-name OCR run returns the
             # space-joined nameless fallback — keep the original segmentation.
@@ -590,7 +632,8 @@ def run_pipeline(jid, src_path, language, model, attendees="", from_url=False, t
                    "roster_counts": roster,
                    "coverage": job.get("coverage"),
                    "named_count": job.get("named_count"),
-                   "segment_count": job.get("segment_count")})
+                   "segment_count": job.get("segment_count"),
+                   "screens": job.get("screens") or []})
     except Exception as e:  # noqa: BLE001
         job["status"] = "error"
         job["error"] = str(e)
@@ -855,10 +898,15 @@ JSON schema (use exactly these keys; omit nothing — use [] or "" when empty):
   "attendees": ["Full Name", ...],
   "latest_status": [ {"headline": "short bold lead", "detail": "1-2 sentences"} ],
   "agenda": ["agenda point", ...],
-  "discussion": [ {"topic": "topic name", "summary": "what was discussed", "decision": "decision if any, else ''"} ],
+  "discussion": [ {"topic": "topic name", "summary": "what was discussed", "decision": "decision if any, else ''", "screens": [1]} ],
   "action_items": [ {"text": "the task", "assignee": "name or team or '⚠️ owner not stated'", "status": "done|in_progress|blocked|pending", "note": "optional context or blocker, else ''"} ]
 }
 Keep it concise and skimmable. Base 'latest_status' on the newest blockers/updates (may be []).
+If a "SCREENS SHARED" section is present below, use each screen's on-screen text as
+meeting context, and set each discussion item's "screens" to the SCREEN numbers that
+belong to that topic (judge by content and timing). A screen belongs to at most one
+topic; leave "screens" as [] when none apply. Do NOT invent facts from screen text
+that contradicts the spoken transcript.
 """
 
 
@@ -878,20 +926,21 @@ def best_mom_model(models):
     return ranked[0] if ranked else "qwen2.5:7b"
 
 
-def build_json_prompt(transcript, attendees_text=""):
+def build_json_prompt(transcript, attendees_text="", screens=None):
     names = [n.strip() for part in (attendees_text or "").replace("\n", ",").split(",")
              for n in [part] if n.strip()]
     block = ""
     if names:
         block = ("\nAttendees (the ONLY names allowed as owners): " + ", ".join(names) + "\n")
-    return MOM_JSON_INSTRUCTIONS + block + "\nTranscript:\n" + (transcript or "")
+    return (MOM_JSON_INSTRUCTIONS + block + screens_prompt_block(screens)
+            + "\nTranscript:\n" + (transcript or ""))
 
 
-def ollama_json_mom(transcript, model, attendees=""):
+def ollama_json_mom(transcript, model, attendees="", screens=None):
     """Ask the local model for the MoM as strict JSON (Ollama format=json)."""
     # Big context so a full ~40-min meeting isn't truncated (Greek tokenizes
     # less efficiently). Fits easily in 24 GB for a 7B/14B model.
-    payload = {"model": model, "prompt": build_json_prompt(transcript, attendees),
+    payload = {"model": model, "prompt": build_json_prompt(transcript, attendees, screens),
                "stream": False, "format": "json",
                "options": {"num_ctx": 32768, "temperature": 0.1}}
     req = urllib.request.Request(f"{OLLAMA_URL}/api/generate",
@@ -930,10 +979,36 @@ _STATUS = {
 }
 
 
-def mom_json_to_email_html(d, greeting=""):
-    """Render the MoM JSON into the exact styled email HTML (inline styles only,
-    so it survives a paste into Gmail). Deterministic — no model involved."""
+def _screen_card_html(sc, num, outdir):
+    """One embedded-screenshot card, styled to match the locked email template.
+    The JPEG is inlined as a data URI so the image survives Copy-for-Gmail,
+    Save-as-PDF and the on-disk MoM.html."""
     e = html.escape
+    path = os.path.join(outdir or "", "screenshots", sc.get("file") or "")
+    img = ""
+    try:
+        with open(path, "rb") as f:
+            b64 = base64.b64encode(f.read()).decode()
+        img = (f'<img src="data:image/jpeg;base64,{b64}" alt="Shared screen {num}" '
+               'style="max-width:100%;border:1px solid rgb(226,232,240);border-radius:8px;display:block">')
+    except OSError:
+        img = ('<div style="border:1px dashed rgb(203,213,225);border-radius:8px;padding:14px;'
+               'text-align:center;color:rgb(100,116,139);font-size:13px">'
+               f'[ screenshot {e(sc.get("file") or "")} ]</div>')
+    who = f' · shared while {e(sc["presenter"])} was speaking' if sc.get("presenter") else ""
+    cap = (f'<p style="margin:4px 0 0;color:rgb(100,116,139);font-size:12px">'
+           f'🖥️ {fmt_ts(sc.get("t"))}{who}</p>')
+    return f'<div style="margin:12px 0 4px">{img}{cap}</div>'
+
+
+def mom_json_to_email_html(d, greeting="", screens=None, outdir=None):
+    """Render the MoM JSON into the exact styled email HTML (inline styles only,
+    so it survives a paste into Gmail). Deterministic — no model involved.
+    `screens` (captured shared-screen shots) are embedded under the discussion
+    point the model mapped them to; unmapped ones go to a section at the end."""
+    e = html.escape
+    screens = screens or []
+    placed = set()
     out = ['<div style="font-family:Inter,Helvetica,Arial,sans-serif;color:rgb(51,65,85)">']
     if greeting:
         for para in [p for p in greeting.split("\n") if p.strip()]:
@@ -981,7 +1056,22 @@ def mom_json_to_email_html(d, greeting=""):
                 out.append(f'<p style="margin:0;color:rgb(71,85,105);line-height:1.6;font-size:14px">{e(dp["summary"])}</p>')
             if dp.get("decision"):
                 out.append(f'<p style="margin:8px 0 0;color:rgb(71,85,105);line-height:1.6;font-size:14px"><strong>Decision:</strong> {e(dp["decision"])}</p>')
+            # Screenshots the model mapped to this topic (1-based SCREEN numbers).
+            for k in (dp.get("screens") or []):
+                try:
+                    k = int(k)
+                except (TypeError, ValueError):
+                    continue
+                if 1 <= k <= len(screens) and k not in placed:
+                    out.append(_screen_card_html(screens[k - 1], k, outdir))
+                    placed.add(k)
             out.append('</div>')
+    # Any captured screens the model did not place -> their own section.
+    rest = [k for k in range(1, len(screens) + 1) if k not in placed]
+    if rest:
+        out.append('<h2 style="font-size:18px;color:rgb(15,23,42);border-left:4px solid rgb(59,130,246);padding-left:12px;margin:24px 0 20px">Shared screens</h2>')
+        for k in rest:
+            out.append(_screen_card_html(screens[k - 1], k, outdir))
     # Action items (status cards)
     ai = d.get("action_items") or []
     if ai:
@@ -1068,7 +1158,7 @@ def ocrmac_python():
 
 
 def ocr_name_transcript(video, audio_json, ffmpeg, step=4.0, jid=None, roster="",
-                        ocr_python=None):
+                        ocr_python=None, screens_dir=None):
     """Token-free OCR speaker naming: label each transcript segment by the on-screen
     active-speaker name. Runs the OCR module (ocr_speakers.py) via whichever Python
     has ocrmac (Apple Vision) — see ocrmac_python().
@@ -1076,7 +1166,9 @@ def ocr_name_transcript(video, audio_json, ffmpeg, step=4.0, jid=None, roster=""
     `roster` is the optional attendee list — passed through to lock OCR onto real
     names (kills doc/UI false positives in Google Meet screen-shares).
 
-    Returns (transcript_text, roster_dict, speakers_list). Every failure/skip mode
+    Returns (transcript_text, roster_dict, speakers_list, screens_list). When
+    screens_dir is given, one JPEG per distinct shared screen is captured there
+    (screens_list carries file/t/presenter/text per shot). Every failure/skip mode
     emits an explicit log line so naming never fails silently; it always degrades
     gracefully (the caller keeps the segmented transcript). Streams "OCR i/n"."""
     def log(msg):
@@ -1086,19 +1178,21 @@ def ocr_name_transcript(video, audio_json, ffmpeg, step=4.0, jid=None, roster=""
     # --- explicit, distinct reasons for skipping (never silent) ---
     if not os.path.exists(OCR_SCRIPT):
         log(f"⚠ Speaker naming skipped: OCR module missing ({OCR_SCRIPT}).")
-        return "", {}, []
+        return "", {}, [], []
     if not os.path.exists(audio_json):
         log(f"⚠ Speaker naming skipped: timestamped segments missing "
             f"({os.path.basename(audio_json)}).")
-        return "", {}, []
+        return "", {}, [], []
     py = ocr_python
     if not py:
         py, reason = ocrmac_python()
         if not py:
             log(f"⚠ Speaker naming skipped: {reason}")
-            return "", {}, []
+            return "", {}, [], []
 
     cmd = [py, OCR_SCRIPT, video, audio_json, "--name-transcript", "--step", str(step)]
+    if screens_dir:
+        cmd += ["--screens-dir", screens_dir]
     if ffmpeg:
         cmd += ["--ffmpeg", ffmpeg]
     if roster and roster.strip():
@@ -1124,31 +1218,34 @@ def ocr_name_transcript(video, audio_json, ffmpeg, step=4.0, jid=None, roster=""
     except Exception as e:  # noqa: BLE001
         log(f"⚠ Speaker naming failed to run ({e.__class__.__name__}: {e}). "
             f"Keeping the transcript without names.")
-        return "", {}, []
+        return "", {}, [], []
 
     if proc.returncode != 0:
         tail = " ".join(l.strip() for l in err_lines[-3:] if l.strip())
         log(f"⚠ Speaker naming exited with code {proc.returncode}"
             + (f" — {tail}" if tail else "") + ". Keeping the transcript without names.")
-        return "", {}, []
+        return "", {}, [], []
     lines = [l for l in (out or "").strip().splitlines() if l.strip()]
     if not lines:
         log("⚠ Speaker naming produced no output. Keeping the transcript without names.")
-        return "", {}, []
+        return "", {}, [], []
     try:
         data = json.loads(lines[-1])
     except Exception as e:  # noqa: BLE001
         log(f"⚠ Could not parse speaker-naming output ({e}). "
             f"Keeping the transcript without names.")
-        return "", {}, []
+        return "", {}, [], []
     transcript = data.get("transcript", "")
     roster_d = data.get("roster", {})
     speakers = data.get("speakers", [])
+    screens = data.get("screens", [])
     if not speakers:
         log("🗣️ Speaker naming ran but matched 0 on-screen names — keeping the "
             "segmented transcript. Tip: add an attendee list to lock onto names, "
             "or tune the MOM_OCR_* env gates for an unusual meeting layout.")
-    return transcript, roster_d, speakers
+    if screens:
+        log(f"🖥️ Captured {len(screens)} shared screen(s) for the MoM.")
+    return transcript, roster_d, speakers, screens
 
 
 # ----------------------------------------------------------------------------
@@ -1186,7 +1283,10 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/result_file":
             self.handle_result_file(qs.get("dir", [""])[0])
         elif path == "/gemini_prompt":
-            self.handle_gemini_prompt(qs.get("job", [""])[0])
+            self.handle_gemini_prompt(qs.get("job", [""])[0],
+                                      qs.get("shots", [""])[0])
+        elif path == "/screenshot":
+            self.handle_screenshot(qs.get("dir", [""])[0], qs.get("name", [""])[0])
         else:
             self._send(404, json.dumps({"error": "not found"}))
 
@@ -1233,6 +1333,27 @@ class Handler(BaseHTTPRequestHandler):
         t.start()
         self._send(200, json.dumps({"job": jid}))
 
+    def handle_screenshot(self, outdir, name):
+        """Serve a captured shared-screen JPEG (thumbnails + preview). Sandboxed
+        to OUTPUT_BASE/*/screenshots/<basename> so it can't read arbitrary files."""
+        base = os.path.realpath(OUTPUT_BASE)
+        d = os.path.realpath(os.path.expanduser(outdir or ""))
+        fname = os.path.basename(name or "")
+        path = os.path.join(d, "screenshots", fname)
+        ok = (d.startswith(base + os.sep) and fname.endswith(".jpg")
+              and os.path.isfile(path))
+        if not ok:
+            self._send(404, json.dumps({"error": "not found"}))
+            return
+        with open(path, "rb") as f:
+            body = f.read()
+        self.send_response(200)
+        self.send_header("Content-Type", "image/jpeg")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "max-age=86400")
+        self.end_headers()
+        self.wfile.write(body)
+
     def handle_open_folder(self):
         """Reveal an output folder in Finder. Restricted to folders under
         OUTPUT_BASE so the button can't open arbitrary paths."""
@@ -1268,15 +1389,23 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0"))
         body = json.loads(self.rfile.read(length).decode() or "{}") if length else {}
         greeting = body.get("greeting", "")
+        # Screenshots ticked in the picker (filenames); default = all captured.
+        included = body.get("screens")
+        screens = job.get("screens") or []
+        if isinstance(included, list):
+            keep = {os.path.basename(n) for n in included}
+            screens = [sc for sc in screens if sc.get("file") in keep]
         try:
-            data = ollama_json_mom(job["transcript"], model, job.get("attendees", ""))
+            data = ollama_json_mom(job["transcript"], model, job.get("attendees", ""),
+                                   screens=screens)
             # Attendees are user-provided ground truth — use them for the pills
             # deterministically rather than trusting the model to echo all names.
             provided = [n.strip() for part in (job.get("attendees", "") or "").replace("\n", ",").split(",")
                         for n in [part] if n.strip()]
             if provided:
                 data["attendees"] = provided
-            htmlout = mom_json_to_email_html(data, greeting=greeting)
+            htmlout = mom_json_to_email_html(data, greeting=greeting, screens=screens,
+                                             outdir=job.get("outdir"))
         except Exception as ex:  # noqa: BLE001
             self._send(500, json.dumps({"error": f"Local MoM failed: {ex}"}))
             return
@@ -1290,15 +1419,20 @@ class Handler(BaseHTTPRequestHandler):
                 pass
         self._send(200, json.dumps({"html": htmlout, "model": model}))
 
-    def handle_gemini_prompt(self, jid):
+    def handle_gemini_prompt(self, jid, shots=""):
         """Return the reusable Gemini styling prompt with this job's transcript
-        embedded, so the UI's 'Copy Gemini prompt' button gives a paste-ready blob."""
-        transcript = ""
+        (and the ticked screenshots' on-screen text) embedded — paste-ready.
+        `shots` is a comma-separated list of ticked screenshot filenames."""
+        transcript, screens = "", []
         with JOBS_LOCK:
             job = JOBS.get(jid)
         if job:
             transcript = job.get("transcript") or ""
-        self._send(200, json.dumps({"prompt": gemini_prompt(transcript)}))
+            screens = job.get("screens") or []
+        if shots:
+            keep = {os.path.basename(n) for n in shots.split(",") if n}
+            screens = [sc for sc in screens if sc.get("file") in keep]
+        self._send(200, json.dumps({"prompt": gemini_prompt(transcript, screens=screens)}))
 
     def handle_fetch(self):
         length = int(self.headers.get("Content-Length", "0"))
@@ -1434,6 +1568,7 @@ class Handler(BaseHTTPRequestHandler):
             "roster": job.get("roster", []), "roster_counts": job.get("roster_counts", {}),
             "coverage": job.get("coverage"), "named_count": job.get("named_count"),
             "segment_count": job.get("segment_count"), "outdir": job.get("outdir"),
+            "screens": job.get("screens") or [],
             "error": job.get("error"),
         }))
 
@@ -1473,7 +1608,16 @@ class Handler(BaseHTTPRequestHandler):
         if os.path.isfile(tpath):
             with open(tpath, "r", encoding="utf-8") as f:
                 tr = f.read()
-        self._send(200, json.dumps({"markdown": md, "transcript": tr, "outdir": d}))
+        screens = []
+        spath = os.path.join(d, "screens.json")
+        if os.path.isfile(spath):
+            try:
+                with open(spath, "r", encoding="utf-8") as f:
+                    screens = json.load(f)
+            except Exception:
+                screens = []
+        self._send(200, json.dumps({"markdown": md, "transcript": tr, "outdir": d,
+                                    "screens": screens}))
 
 
 # ----------------------------------------------------------------------------
@@ -1657,6 +1801,21 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .sp-empty .sp-empty-body { font-size:13px; color:#92400e; }
   .sp-empty .sp-empty-reason { color:#78350f; font-weight:500; }
   .sp-empty .sp-empty-fix { display:block; margin-top:5px; color:#b45309; }
+  /* shared-screens picker */
+  #screensPanel { background:var(--panel2); border:1px solid var(--border); border-radius:10px; padding:16px 18px; margin-bottom:18px; }
+  #screensPanel h4 { margin:0 0 4px; font-size:14.5px; font-weight:500; display:flex; align-items:center; gap:7px; }
+  #screensPanel .sc-sub { color:var(--muted); font-size:12.5px; display:block; margin-bottom:12px; }
+  .shot-strip { display:flex; gap:10px; flex-wrap:wrap; }
+  .shot { position:relative; width:148px; cursor:pointer; }
+  .shot img { width:148px; height:88px; object-fit:cover; object-position:top; display:block;
+              border:2px solid var(--border-strong); border-radius:8px; transition:.12s; }
+  .shot.on img { border-color:var(--accent); }
+  .shot .tick { position:absolute; top:5px; right:5px; width:20px; height:20px; border-radius:50%;
+                background:var(--panel); border:1px solid var(--border-strong); display:flex;
+                align-items:center; justify-content:center; font-size:12px; color:transparent; }
+  .shot.on .tick { background:var(--accent); border-color:var(--accent); color:#fff; }
+  .shot .cap { font-size:11px; color:var(--muted); margin-top:3px; text-align:center;
+               white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   details { margin-top:18px; }
   summary { cursor:pointer; color:var(--muted); font-size:13px; }
   .spin { display:inline-block; width:14px;height:14px;border:2px solid rgba(255,255,255,.3);
@@ -1780,6 +1939,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
     <div id="speakerPanel" class="hidden"></div>
 
+    <div id="screensPanel" class="hidden"></div>
+
     <!-- Choose how to create the MoM -->
     <div id="routeCards">
       <div class="route reco">
@@ -1826,7 +1987,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
 <script>
 const $ = s => document.querySelector(s);
-let chosenFile = null, currentJob = null, momText = "", transcriptText = "", styledHtml = "", currentOutdir = "";
+let chosenFile = null, currentJob = null, momText = "", transcriptText = "", styledHtml = "", currentOutdir = "", currentScreens = [];
 // D1/D2/D3 run-scoped state
 let healthCap = null;      // capability summary from /health (D1)
 let wantMom = false;       // did this run request a local MoM?
@@ -1975,7 +2136,8 @@ function beginRun(phase){
   isVideoInput = guessIsVideo((chosenFile && chosenFile.name) || $('#path').value || $('#url').value);
   if(!wantMom) setStep('mom','skipped','Not requested — transcript only');
   $('#progFill').style.width='0'; setIndet(true); setPhase(phase); startTimer();
-  momText = ""; styledHtml = ""; currentOutdir=""; $('#mom').innerHTML = '';
+  momText = ""; styledHtml = ""; currentOutdir=""; currentScreens=[]; $('#mom').innerHTML = '';
+  $('#screensPanel').classList.add('hidden');
   window.scrollTo({top: $('#progCard').offsetTop-20, behavior:'smooth'});
 }
 
@@ -2086,6 +2248,7 @@ function listen(job){
       if(d.stage) setStep(d.stage,'active', pctTxt);
     }
     else if(d.type==='coverage'){ coverageInfo = {pct:d.pct, named:d.named, total:d.total}; }
+    else if(d.type==='screens'){ currentScreens = d.screens || []; }
     else if(d.type==='log'){ logLine(d.line); parseLogForSteps(d.line); }
     else if(d.type==='transcript'){ transcriptText = d.text; $('#rawTranscript').textContent = d.text; }
     else if(d.type==='partial'){ setStep('mom','active','running'); momText += d.text; $('#resultCard').classList.remove('hidden'); $('#mom').innerHTML = renderMd(momText); }
@@ -2236,11 +2399,17 @@ $('#dlTxtBtn').onclick = () => {
 $('#copyPromptBtn').onclick = async () => {
   if(!transcriptText){ flash('#copyPromptBtn','No transcript yet'); return; }
   try {
-    const r = await fetch('/gemini_prompt?job='+(currentJob||''));
+    const shots = checkedShots();
+    const r = await fetch('/gemini_prompt?job='+(currentJob||'')+'&shots='+encodeURIComponent(shots.join(',')));
     let prompt = (await r.json()).prompt || '';
     if(prompt.indexOf(transcriptText)===-1){ prompt = prompt.replace('<paste transcript here>', transcriptText); }
     await navigator.clipboard.writeText(prompt);
     flash('#copyPromptBtn','Copied — paste into Gemini, attach screenshots');
+    // Open the screenshots folder so the ticked shots can be dragged into Gemini.
+    if(shots.length && currentOutdir){
+      fetch('/open_folder', {method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({dir: currentOutdir + '/screenshots'})}).catch(()=>{});
+    }
   } catch(e){ flash('#copyPromptBtn','Copy failed'); }
 };
 
@@ -2264,7 +2433,7 @@ $('#styledBtn').onclick = async () => {
   const b=$('#styledBtn'); const orig=b.dataset.html||(b.dataset.html=b.innerHTML);
   b.innerHTML='<svg class="ic spin-ic" aria-hidden="true"><use href="#i-loader-2"/></svg> Generating on your Mac…'; b.disabled=true;
   try {
-    const r = await fetch('/styled_mom?job='+(currentJob||''), {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
+    const r = await fetch('/styled_mom?job='+(currentJob||''), {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({screens: checkedShots()})});
     const d = await r.json();
     if(d.error){ alert(d.error); }
     else {
@@ -2364,6 +2533,30 @@ function renderResult(d){
   } else {
     renderSpeakerEmpty();
   }
+  if(d.screens && d.screens.length) currentScreens = d.screens;
+  renderScreensPanel(currentScreens);
+}
+
+// ---- shared-screens picker: tick the shots that should go into the MoM ----
+function renderScreensPanel(screens){
+  const p = $('#screensPanel');
+  if(!screens || !screens.length){ p.classList.add('hidden'); return; }
+  const cells = screens.map((sc,i)=>{
+    const src = '/screenshot?dir='+encodeURIComponent(currentOutdir)+'&name='+encodeURIComponent(sc.file);
+    const who = sc.presenter ? esc(sc.presenter) : '';
+    return '<div class="shot on" data-file="'+esc(sc.file)+'" title="'+who+'">'+
+      '<img src="'+src+'" loading="lazy" alt="screen '+(i+1)+'">'+
+      '<span class="tick">'+icon('check')+'</span>'+
+      '<div class="cap">'+fmtTime((sc.t||0)*1000)+(who?' · '+who:'')+'</div></div>';
+  }).join('');
+  p.innerHTML = '<h4>'+icon('eye')+' Shared screens ('+screens.length+')</h4>'+
+    '<span class="sc-sub">Captured from the recording — untick any that shouldn\'t appear in the MoM. Ticked shots are embedded in the offline MoM and listed in the Gemini prompt.</span>'+
+    '<div class="shot-strip">'+cells+'</div>';
+  p.classList.remove('hidden');
+  p.querySelectorAll('.shot').forEach(el=>{ el.onclick = ()=> el.classList.toggle('on'); });
+}
+function checkedShots(){
+  return Array.from(document.querySelectorAll('#screensPanel .shot.on')).map(el=>el.dataset.file);
 }
 
 // Open the output folder in Finder (local server can do this safely).

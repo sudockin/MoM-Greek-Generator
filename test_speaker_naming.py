@@ -145,6 +145,83 @@ class FuzzyConsolidation(unittest.TestCase):
         self.assertEqual(canonical["Jordan Baker"], "Jordan Baker")
 
 
+def _boxes(lines, x=0.3, y=0.5):
+    """Synthesize OCR results: one central text box per line."""
+    return [(t, 0.9, (x, y, 0.3, 0.02)) for t in lines]
+
+
+_SLIDE_A = [f"Quarterly metrics row {i} with enough characters" for i in range(10)]
+_SLIDE_B = [f"Totally different agenda item number {i} right here" for i in range(10)]
+_CAMERA = ["Alex Rivera", "Sam Chen"]  # a camera grid: just a couple of name tags
+
+
+class ScreenCapture(unittest.TestCase):
+    def test_share_frame_detection(self):
+        self.assertTrue(ocr.is_share_frame(_boxes(_SLIDE_A)))
+        self.assertFalse(ocr.is_share_frame(_boxes(_CAMERA)))
+
+    def test_tracker_one_screen_per_slide(self):
+        saved = []
+        tr = ocr.ScreenTracker(4.0, lambda idx, num: (saved.append(idx) or f"screen-{num:02d}.jpg"))
+        for i in range(5):            # slide A for 20s
+            tr.feed(i, _boxes(_SLIDE_A))
+        for i in range(5, 8):         # camera break
+            tr.feed(i, _boxes(_CAMERA))
+        for i in range(8, 12):        # slide B
+            tr.feed(i, _boxes(_SLIDE_B))
+        screens = tr.finish()
+        self.assertEqual(len(screens), 2)
+        self.assertEqual(screens[0]["file"], "screen-01.jpg")
+        # representative frame = middle of each run (A: frames 0-4 → 2; B: frames 8-11 → 10)
+        self.assertEqual(saved, [2, 10])
+        self.assertIn("Quarterly metrics", screens[0]["text"])
+
+    def test_tracker_splits_on_content_change_without_gap(self):
+        tr = ocr.ScreenTracker(4.0, lambda idx, num: f"s{num}.jpg")
+        for i in range(4):
+            tr.feed(i, _boxes(_SLIDE_A))
+        for i in range(4, 8):         # slide flips directly to B
+            tr.feed(i, _boxes(_SLIDE_B))
+        self.assertEqual(len(tr.finish()), 2)
+
+    def test_tracker_ignores_camera_only_meeting(self):
+        tr = ocr.ScreenTracker(4.0, lambda idx, num: f"s{num}.jpg")
+        for i in range(30):
+            tr.feed(i, _boxes(_CAMERA))
+        self.assertEqual(tr.finish(), [])
+
+    def test_noisy_or_scrolling_screen_stays_one_shot(self):
+        # Same dashboard, OCR noise + scrolling: ~40% of lines differ per frame
+        # but most words survive — must NOT fragment into one shot per frame.
+        tr = ocr.ScreenTracker(4.0, lambda idx, num: f"s{num}.jpg")
+        base = [f"grafana explore logs panel row {i} error failed timeout" for i in range(10)]
+        for f in range(12):
+            noisy = list(base)
+            for j in range(4):  # rotate 4 lines per frame (scroll/noise)
+                noisy[(f + j) % 10] = f"grafana explore logs panel row shifted {f}{j} warn retry"
+            tr.feed(f, _boxes(noisy))
+        self.assertEqual(len(tr.finish()), 1)
+
+    def test_single_frame_blip_dropped(self):
+        tr = ocr.ScreenTracker(4.0, lambda idx, num: f"s{num}.jpg")
+        tr.feed(0, _boxes(_CAMERA))
+        tr.feed(1, _boxes(_SLIDE_A))   # 4-second flash during app switching
+        tr.feed(2, _boxes(_CAMERA))
+        self.assertEqual(tr.finish(), [])
+
+    def test_same_screen_resurfacing_extends_not_duplicates(self):
+        tr = ocr.ScreenTracker(4.0, lambda idx, num: f"s{num}.jpg")
+        for i in range(4):
+            tr.feed(i, _boxes(_SLIDE_A))
+        for i in range(4, 7):
+            tr.feed(i, _boxes(_CAMERA))
+        for i in range(7, 11):          # back to the same slide
+            tr.feed(i, _boxes(_SLIDE_A))
+        screens = tr.finish()
+        self.assertEqual(len(screens), 1)
+        self.assertEqual(screens[0]["frames"], 8)
+
+
 class BiasPrompt(unittest.TestCase):
     def test_contains_attendees_and_terms(self):
         p = server.whisper_bias_prompt("Alex Rivera, Sam Chen", "Salesforce, KYC")
