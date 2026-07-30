@@ -1,0 +1,26 @@
+RELEASE_NOTES.md
+  s_35871ec8847162::t_2d02183d028b1a 57
+  s_35871ec8847162::t_dce6dd61f2952e 9-35
+  s_35871ec8847162::t_7c9e85152e2f7f 104
+  s_35871ec8847162::t_536f85445ce1e4 1
+  s_35871ec8847162::t_3688ed743f5faf 72,75
+README.md
+  s_35871ec8847162::t_1558405329a662 56-60
+  s_35871ec8847162::t_b0fbf0fbbcc87e 19
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "70acf8a4fd01d89a7a7f603eda56797dcd1cbc7d",
+  "prompts": {},
+  "sessions": {
+    "s_35871ec8847162": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9fad9abf-c0af-4eb6-8381-8280b675fffa",
+        "model": "claude-opus-5"
+      },
+      "human_author": "pj <e.valsamakis@gmail.com>"
+    }
+  }
+}
