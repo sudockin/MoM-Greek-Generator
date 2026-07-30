@@ -69,12 +69,15 @@ Recording a call is easy; turning it into shareable minutes is the slog — espe
    file path** on this Mac (e.g. `~/Downloads/meeting.mp4`, which skips the upload).
 3. **② Meeting context** — type the **Attendees** (recommended: this **locks speaker-name
    detection** onto the real people and kills false matches from shared-screen text).
-4. **③ Generate.** When it's done you get a speaker-labelled transcript and a choice of
-   two ways to write the MoM:
+4. **③ Generate.** When it's done you get a speaker-labelled transcript, a strip of
+   **shared-screen screenshots** (untick any you don't want), and a choice of two ways
+   to write the MoM:
    - **✨ Best quality — Google Gemini:** click **Copy Gemini prompt**, paste into Gemini,
-     attach your screenshots → paste the styled result into Gmail.
+     drag in the captured screenshots (the folder opens for you) → paste the styled
+     result into Gmail.
    - **🔒 Private & offline:** click **Generate styled MoM** to draft it locally with your
-     Ollama model — same styled email, 100% offline, no tokens. Then **Copy for Gmail**.
+     Ollama model — same styled email with the screenshots embedded, 100% offline, no
+     tokens. Then **Copy for Gmail**.
 
 Both paths produce the **same styled email** (title, attendee chips, status box,
 discussion cards, colour-coded action items). A bigger local model (`qwen2.5:14b`)
@@ -84,6 +87,24 @@ gives richer offline drafts on a 24 GB Mac.
 > whether on-screen speaker names are possible, and whether audio diarization is available —
 > so you know up front what to expect. Run `python3 server.py --self-check` for the same
 > report without processing a file.
+
+### 🖥️ Shared screens in the MoM (automatic, local)
+
+Whatever was **presented** during the call becomes part of the notes. The same
+on-device OCR pass that reads speaker names also spots when someone is sharing,
+splits the share into distinct screens, and saves one screenshot per screen —
+**cropped to the presented content** (the floating speaker tile and meeting
+chrome are trimmed away, like Gemini's meeting notes).
+
+On the results screen a **Shared screens** strip shows every capture; untick
+anything that shouldn't reach the email. Ticked shots are embedded in the offline
+MoM **inside the discussion point they belong to** (captioned with the timestamp
+and who was presenting), and their on-screen text is included in the Gemini
+prompt. Originals stay in `<output folder>/screenshots/`.
+
+Tuning for unusual layouts (all optional): `MOM_SCREEN_MIN_BOXES`,
+`MOM_SCREEN_MIN_CHARS`, `MOM_SCREEN_NEW_SIM`, `MOM_SCREEN_MIN_FRAMES`,
+`MOM_SCREEN_MAX`, `MOM_SCREEN_TILE_MIN_X`.
 
 ### 🎥 Speaker names from the video (OCR — no token, no account)
 

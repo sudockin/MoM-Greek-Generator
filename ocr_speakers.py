@@ -66,6 +66,7 @@ _UI_TOKENS = {
     "report", "overview", "summary", "meeting", "minutes", "agenda", "review",
     "status", "update", "project", "roadmap", "backlog", "sprint", "vendor",
     "console", "browser", "window", "untitled", "document", "sheet", "slide",
+    "external", "ids", "internal", "details", "results", "options",
 }
 _GREEK_UI_TOKENS = {"σύνολο", "αναζήτηση", "αρχείο", "επεξεργασία", "προβολή",
                     "ρυθμίσεις", "μενού", "σελίδα", "πίνακας"}
@@ -215,8 +216,228 @@ def _ocr_one(path):
         return []
 
 
-def build_name_timeline(video, step=4.0, progress=None, ffmpeg=None, roster_pairs=None):
-    """Return sorted [(timestamp_seconds, name)] sampled every `step` seconds.
+# ---------------------------------------------------------------------------
+# Shared-screen capture: reuse the same OCR pass to detect when someone is
+# presenting, split the share into distinct "screens" (slide/page changes),
+# and save one representative frame per screen for the MoM.
+# ---------------------------------------------------------------------------
+SHARE_MIN_BOXES = int(_envf("MOM_SCREEN_MIN_BOXES", 8))    # text lines mid-frame
+SHARE_MIN_CHARS = int(_envf("MOM_SCREEN_MIN_CHARS", 120))  # total chars mid-frame
+SCREEN_NEW_SIM = _envf("MOM_SCREEN_NEW_SIM", 0.3)          # below → a new screen
+SCREEN_MIN_FRAMES = int(_envf("MOM_SCREEN_MIN_FRAMES", 2)) # ignore 1-frame blips
+SCREEN_MAX = int(_envf("MOM_SCREEN_MAX", 40))              # capture cap per meeting
+
+
+_WORD_RE = re.compile(r"[A-Za-zΑ-Ωα-ωΆ-ώ]{3,}")
+
+
+def _frame_text_stats(results):
+    """(central_text_boxes, total_chars, signature_set, lines, rects) for one
+    frame; rects = [(x, y, w, h, text)] of each accepted central box.
+
+    A camera-grid frame has a handful of short name tags; a shared screen has
+    many text lines spread across the middle of the frame. The signature is a
+    WORD set (letters-only, len>=3) — robust to OCR noise and to digit-heavy
+    content (timestamps, log lines) that differs on every read of the same
+    screen."""
+    sig, lines, rects, chars, boxes = set(), [], [], 0, 0
+    for text, conf, (x, y, w, h) in results:
+        t = (text or "").strip()
+        if conf < 0.3 or len(t) < 2:
+            continue
+        cx, cy = x + w / 2.0, y + h / 2.0
+        if 0.03 <= cx <= 0.97 and 0.05 <= cy <= 0.97:
+            boxes += 1
+            chars += len(t)
+            lines.append(t)
+            rects.append((x, y, w, h, t))
+            sig.update(w.lower() for w in _WORD_RE.findall(t))
+    return boxes, chars, sig, lines, rects
+
+
+TILE_ZONE_MIN_X = _envf("MOM_SCREEN_TILE_MIN_X", 0.6)  # right-hand floating-tile zone
+# The tile's name tag sits at the tile's bottom; anything higher is app chrome
+# (tab strip, bookmarks bar) — origin is BOTTOM-left, so "higher" = larger y.
+TILE_TAG_MAX_Y = _envf("MOM_SCREEN_TILE_MAX_Y", 0.75)
+
+
+def content_crop_box(rects, pad=0.025, tile_x=None):
+    """Normalized (x0, y0, x1, y1) of the PRESENTED content area (origin
+    bottom-left), or None to keep the full frame.
+
+    The area is the union of the frame's central text boxes, excluding
+    person-name tags (the floating speaker tile / participant labels) — which
+    crops recordings to just the shared screen, like Gemini's meeting notes.
+    The speaker tile floats on the RIGHT and its name tag marks the tile's left
+    edge, so the crop's right side is clamped there — that removes the tile even
+    when full-width content (browser chrome) extends behind it. `tile_x` is the
+    meeting-wide estimate of that edge (see ScreenTracker), used because the tag
+    may be unreadable in this particular frame; the frame's own tags refine it.
+    Falls back to None on sparse text or a suspiciously small union, so a big
+    chart with few labels is never over-cropped."""
+    keep, tag_xs = [], []
+    for x, y, w, h, t in rects:
+        if is_person_name(t, allow_single=True):
+            tag_xs.append(x)
+        else:
+            keep.append((x, y, w, h))
+    if len(keep) < 5:
+        return None
+    x0 = min(x for x, _, _, _ in keep)
+    y0 = min(y for _, y, _, _ in keep)
+    x1 = max(x + w for x, _, w, _ in keep)
+    y1 = max(y + h for _, y, _, h in keep)
+    xr = min(1.0, x1 + pad)
+    # Clamp at the tile's left edge: this frame's leftmost right-zone tag, or the
+    # meeting-wide estimate. Ignored if it would eat the content itself.
+    # Prefer the meeting-wide estimate (robust); fall back to this frame's tags
+    # only when no global estimate exists, since a stray name inside the shared
+    # content would otherwise pull the edge left and eat real content.
+    edges = [tile_x] if tile_x is not None else [
+        tx for tx in tag_xs if tx >= TILE_ZONE_MIN_X]
+    if edges:
+        limit = min(edges) - 0.005
+        if limit - x0 >= 0.35:
+            xr = min(xr, limit)
+    if (xr - x0) < 0.35 or (y1 - y0) < 0.25:
+        return None
+    return (max(0.0, x0 - pad), max(0.0, y0 - pad),
+            xr, min(1.0, y1 + pad))
+
+
+def _sig_sim(a, b):
+    """Jaccard similarity of two frame text signatures (0..1)."""
+    if not a or not b:
+        return 0.0
+    return len(a & b) / float(len(a | b))
+
+
+def is_share_frame(results):
+    boxes, chars, _, _, _ = _frame_text_stats(results)
+    return boxes >= SHARE_MIN_BOXES and chars >= SHARE_MIN_CHARS
+
+
+class ScreenTracker:
+    """Feed one frame at a time; groups consecutive similar share-frames into
+    screens and saves ONE representative frame per screen via save_fn.
+
+    Similarity is measured against the PREVIOUS frame in the run (not the
+    first), so slowly scrolling content — a log viewer, a long doc — stays one
+    screen instead of fragmenting. Runs shorter than SCREEN_MIN_FRAMES are
+    treated as transition blips and dropped, and a new run that still looks
+    like the last SAVED screen (app switch and back) extends it rather than
+    producing a near-duplicate shot.
+
+    Frames are only WRITTEN in finish(), so every crop can use the
+    meeting-wide estimate of the floating tile's left edge (the tag is often
+    unreadable in one given frame, but the tile never moves).
+
+    save_fn(frame_index, screen_number, crop_box) -> saved filename (or None to
+    skip); injected so the pure segmentation logic is testable without files."""
+
+    def __init__(self, step, save_fn):
+        self.step = step
+        self.save_fn = save_fn
+        self.screens = []
+        self._run = None        # {"sig","start","frames":[(idx, lines, rects)]}
+        self._saved_sigs = []   # word signature per kept screen (same order)
+        self._pending = []      # (mid_idx, mid_rects) parallel to self.screens
+        self._tag_xs = []       # right-zone name-tag x positions, whole meeting
+
+    def feed(self, idx, results):
+        t = idx * self.step
+        boxes, chars, sig, lines, rects = _frame_text_stats(results)
+        share = boxes >= SHARE_MIN_BOXES and chars >= SHARE_MIN_CHARS
+        # Track the floating tile's left edge, but ONLY while a screen is being
+        # shared: in camera-grid view the participant tags sit at unrelated
+        # positions and would drag the estimate left (over-cropping).
+        if share:
+            for x, y, _w, h, txt in rects:
+                if (x >= TILE_ZONE_MIN_X and y <= TILE_TAG_MAX_Y
+                        and LABEL_MIN_H <= h <= LABEL_MAX_H
+                        # 2-3 tokens required: a single capitalised word is far
+                        # more likely to be static browser/app chrome (bookmark
+                        # buttons, toolbar labels), which sits at a fixed x and
+                        # would otherwise become a very convincing false mode.
+                        and is_person_name(txt)):
+                    self._tag_xs.append(x)
+        if share and self._run is not None and _sig_sim(sig, self._run["sig"]) >= SCREEN_NEW_SIM:
+            self._run["sig"] = sig  # rolling: compare each frame to its neighbour
+            self._run["frames"].append((idx, lines, rects))
+            return
+        self._close()
+        if share:
+            self._run = {"sig": sig, "start": t, "frames": [(idx, lines, rects)]}
+
+    def _close(self):
+        run = self._run
+        self._run = None
+        if not run or len(self.screens) >= SCREEN_MAX:
+            return
+        frames = run["frames"]
+        if len(frames) < SCREEN_MIN_FRAMES:
+            return
+        mid_idx, mid_lines, mid_rects = frames[len(frames) // 2]
+        # The same app/screen resurfacing later in the meeting extends the shot
+        # already saved for it (most recent match wins) instead of duplicating.
+        for si in range(len(self._saved_sigs) - 1, -1, -1):
+            if _sig_sim(run["sig"], self._saved_sigs[si]) >= SCREEN_NEW_SIM:
+                self.screens[si]["end"] = frames[-1][0] * self.step
+                self.screens[si]["frames"] += len(frames)
+                return
+        self._saved_sigs.append(run["sig"])
+        self._pending.append((mid_idx, mid_rects))
+        self.screens.append({
+            "file": None,   # assigned in finish(), once the tile edge is known
+            "t": mid_idx * self.step,
+            "start": run["start"],
+            "end": frames[-1][0] * self.step,
+            "frames": len(frames),
+            "text": "\n".join(mid_lines[:60])[:1500],
+        })
+
+    def tile_edge(self):
+        """Meeting-wide estimate of the floating tile's left edge, or None.
+
+        Uses the MODE of observed name-tag positions, not the median: the tile
+        sits at the same x in every shared frame (hundreds of hits in one spot),
+        while person names that happen to appear inside the shared content
+        (customer names in a log, a doc byline) scatter across positions and a
+        median would be dragged left, over-cropping real content. Adjacent
+        0.01 buckets are pooled so rounding jitter can't split the cluster."""
+        if not self._tag_xs:
+            return None
+        buckets = collections.Counter(round(x, 2) for x in self._tag_xs)
+        best, best_n = None, 0
+        for b in buckets:
+            n = (buckets[b] + buckets.get(round(b - 0.01, 2), 0)
+                 + buckets.get(round(b + 0.01, 2), 0))
+            if n > best_n:
+                best, best_n = b, n
+        if best is None or best_n < 3:
+            return None  # no stable, repeated position — don't risk a crop
+        cluster = sorted(x for x in self._tag_xs if abs(round(x, 2) - best) <= 0.01)
+        return cluster[len(cluster) // 2]
+
+    def finish(self):
+        self._close()
+        tile_x = self.tile_edge()
+        kept = []
+        for sc, (idx, rects) in zip(self.screens, self._pending):
+            fname = self.save_fn(idx, len(kept) + 1,
+                                 content_crop_box(rects, tile_x=tile_x))
+            if fname:
+                sc["file"] = fname
+                kept.append(sc)
+        self.screens = kept
+        return kept
+
+
+def build_name_timeline(video, step=4.0, progress=None, ffmpeg=None, roster_pairs=None,
+                        screens_dir=None):
+    """Return (sorted [(timestamp_seconds, name)], screens) sampled every `step`
+    seconds. `screens` is [] unless screens_dir is given, in which case one
+    representative JPEG per detected shared screen is saved there.
 
     OCR runs across frames in parallel (Apple Vision releases the GIL), which is
     the bulk of the wall-clock time on long meetings."""
@@ -230,17 +451,51 @@ def build_name_timeline(video, step=4.0, progress=None, ffmpeg=None, roster_pair
         frames = sorted(f for f in os.listdir(tmp) if f.endswith(".jpg"))
         n = len(frames)
         paths = [os.path.join(tmp, fn) for fn in frames]
+
+        tracker = None
+        if screens_dir:
+            os.makedirs(screens_dir, exist_ok=True)
+
+            def save_frame(idx, num, crop=None):
+                src = paths[idx]
+                fname = f"screen-{num:02d}-t{int(idx * step)}s.jpg"
+                dst = os.path.join(screens_dir, fname)
+                # Crop to the presented content (ocrmac box origin is BOTTOM-left;
+                # Pillow's is top-left). Any failure falls back to the full frame.
+                if crop:
+                    try:
+                        from PIL import Image
+                        with Image.open(src) as im:
+                            wpx, hpx = im.size
+                            x0, y0, x1, y1 = crop
+                            box = (int(x0 * wpx), int((1 - y1) * hpx),
+                                   int(x1 * wpx), int((1 - y0) * hpx))
+                            im.crop(box).save(dst, "JPEG", quality=85)
+                        return fname
+                    except Exception:
+                        pass
+                try:
+                    import shutil as _sh
+                    _sh.copyfile(src, dst)
+                    return fname
+                except OSError:
+                    return None
+            tracker = ScreenTracker(step, save_frame)
+
         done = 0
         with concurrent.futures.ThreadPoolExecutor(max_workers=6) as ex:
             for i, res in enumerate(ex.map(_ocr_one, paths)):
                 name = name_from_results(res, roster_pairs)
                 if name:
                     timeline.append((i * step, name))
+                if tracker:
+                    tracker.feed(i, res)
                 done += 1
                 if progress and done % 25 == 0:
                     progress(done, n)
+        screens = tracker.finish() if tracker else []
     timeline.sort()
-    return timeline
+    return timeline, screens
 
 
 def _name_sim(a, b):
@@ -302,19 +557,21 @@ def map_speakers(diar_segments, timeline, canonical=None):
 UNKNOWN = "Speaker (unknown)"
 
 
-def assign_transcript(video, audio_json, step=4.0, ffmpeg=None, progress=None, roster_pairs=None):
+def assign_transcript(video, audio_json, step=4.0, ffmpeg=None, progress=None,
+                      roster_pairs=None, screens_dir=None):
     """Token-free speaker attribution: label each transcript segment with the
-    on-screen active-speaker name (no diarization needed).
+    on-screen active-speaker name (no diarization needed). When screens_dir is
+    given, also captures one JPEG per distinct shared screen.
 
-    Returns (transcript_text, roster_dict, speakers_list)."""
-    tl = build_name_timeline(video, step=step, ffmpeg=ffmpeg, progress=progress,
-                             roster_pairs=roster_pairs)
+    Returns (transcript_text, roster_dict, speakers_list, screens_list)."""
+    tl, screens = build_name_timeline(video, step=step, ffmpeg=ffmpeg, progress=progress,
+                                      roster_pairs=roster_pairs, screens_dir=screens_dir)
     with open(audio_json, "r", encoding="utf-8") as f:
         segs = json.load(f).get("segments", [])
 
     if not tl:  # no on-screen names found (e.g. not a video call) -> plain transcript
         text = " ".join((s.get("text") or "").strip() for s in segs if s.get("text"))
-        return text.strip(), {}, []
+        return text.strip(), {}, [], screens
 
     counts, canonical = consolidate_roster(tl)
     # Without a roster, a name seen in a single frame of a long meeting is OCR
@@ -362,7 +619,12 @@ def assign_transcript(video, audio_json, step=4.0, ffmpeg=None, progress=None, r
     for n, _ in blocks:
         if n not in speakers:
             speakers.append(n)
-    return transcript, roster, speakers
+    # Who was presenting each captured screen: the active speaker at its time
+    # (carry-over semantics, same as transcript labelling).
+    for sc in screens:
+        idx = bisect.bisect_right(times, sc["t"]) - 1
+        sc["presenter"] = names[idx] if 0 <= idx < len(names) else ""
+    return transcript, roster, speakers, screens
 
 
 def main():
@@ -373,6 +635,8 @@ def main():
     ap.add_argument("--ffmpeg", default=None)
     ap.add_argument("--roster", default="",
                     help="attendee list (comma/newline separated) to lock OCR onto real names")
+    ap.add_argument("--screens-dir", default="",
+                    help="also capture one JPEG per distinct shared screen into this dir")
     ap.add_argument("--json", action="store_true", help="emit mapping+roster as JSON to stdout")
     ap.add_argument("--name-transcript", action="store_true",
                     help="token-free: label each segment of the given audio.json by on-screen name")
@@ -382,14 +646,17 @@ def main():
     roster_pairs = parse_roster(args.roster)
 
     if args.name_transcript:
-        transcript, roster, speakers = assign_transcript(
+        transcript, roster, speakers, screens = assign_transcript(
             args.video, args.diarization, step=args.step, ffmpeg=args.ffmpeg,
-            progress=prog, roster_pairs=roster_pairs)
-        print(json.dumps({"transcript": transcript, "roster": roster, "speakers": speakers}))
+            progress=prog, roster_pairs=roster_pairs,
+            screens_dir=args.screens_dir or None)
+        print(json.dumps({"transcript": transcript, "roster": roster,
+                          "speakers": speakers, "screens": screens}))
         return
 
-    tl = build_name_timeline(args.video, step=args.step, ffmpeg=args.ffmpeg,
-                             progress=prog, roster_pairs=roster_pairs)
+    tl, _ = build_name_timeline(args.video, step=args.step, ffmpeg=args.ffmpeg,
+                                progress=prog, roster_pairs=roster_pairs,
+                                screens_dir=args.screens_dir or None)
     counts, canonical = consolidate_roster(tl)
 
     if args.json:

@@ -6,11 +6,13 @@ pills, amber "Latest Status" box, purple discussion cards, and colour-coded
 action-item cards, ready to paste into Gmail.
 
 ## How to use it (per meeting)
-1. Generate the transcript with the MoM Generator (it labels who said what).
+1. Generate the transcript with the MoM Generator (it labels who said what — and
+   captures a screenshot of every distinct screen that was shared).
 2. Open **Gemini** (2.5 Pro recommended). Paste **everything between the two
    `=====` lines below**, then paste the transcript where marked.
-3. **Attach your screenshots** (slides, diagrams, the Meet window) so Gemini can
-   pull visuals/context into the notes.
+3. **Attach the captured screenshots** — the app's "Copy Gemini prompt" button
+   already embeds each screen's on-screen text and opens the screenshots folder
+   for you; just drag the ticked shots into Gemini (plus any extras of your own).
 4. Gemini returns one HTML block. Click **Copy**, then in Gmail paste it into the
    body (Cmd+V). The styling and visuals come through. Add your signature and send.
 

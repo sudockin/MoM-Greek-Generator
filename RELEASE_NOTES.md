@@ -22,6 +22,16 @@ v1.0 could quietly produce a **nameless** transcript when on‑screen speaker na
 
 ---
 
+## 🖥️ Shared screens — presentations become part of the notes
+
+When someone presents, the MoM now includes **what was on screen**, not just what was said.
+
+- **Automatic capture.** Every distinct screen shared during the call is saved as a screenshot — no clicking, no manual snipping. Re‑showing the same dashboard later doesn't create duplicates.
+- **Cropped like Gemini's notes.** Shots are trimmed to the presented content — the floating speaker tile and meeting chrome are cut out.
+- **You choose what appears.** A thumbnail strip on the results screen lets you untick anything that shouldn't reach the email.
+- **Placed in context.** Screenshots land inside the discussion point they belong to, captioned with the timestamp and who was presenting.
+- **Both routes.** The offline MoM embeds the images directly; the Gemini prompt carries each screen's on‑screen text and opens the folder so you can drag the shots in.
+
 ## ✨ Why people like it
 
 - **Greek in → English out.** Records in Greek, writes the minutes in clear business English.
