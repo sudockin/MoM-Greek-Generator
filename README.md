@@ -49,7 +49,8 @@ Recording a call is easy; turning it into shareable minutes is the slog — espe
 - 🗣️ **Knows who spoke.** Reads the active-speaker name straight off Google Meet / Teams video (Apple Vision OCR) and labels every line — real names, no account, no token. It never invents a name.
 - 🌐 **Greek in → English out.** Transcribes Greek accurately; the minutes come out in clear business English.
 - ⚡ **Fast.** Runs `large-v3-turbo` on the Metal GPU — roughly **10× faster** than the old CPU path, same Greek quality. A 40-minute meeting is done in a few minutes.
-- 🎨 **Consistent, beautiful output.** Every MoM lands in the same styled email — title, attendee chips, "Latest status", discussion cards, and colour-coded ✅ / 🔄 / 🛑 / ⬜ action items.
+- 🎨 **Consistent, beautiful output.** Every MoM lands in the same styled email — subject line, title, attendee chips, "Latest status", discussion cards, and colour-coded 🚨 / 🔄 / 🛑 / ⏳ / ⬜ / ✅ action items, grouped into New, Carried Forward and Closed.
+- 🧠 **Minutes that reason, not just summarise.** Every topic has to resolve — into a decision, or into the specific questions that must be answered first and who answers them. The critical path gets named, scope gets held, and re-opened decisions get their history restated. See [the quality standard](#-the-quality-standard) below.
 - 🔒 **Private by construction.** Audio, transcript, and minutes never leave the laptop. The only network access is the one-time setup download.
 - 🖥️ **No terminal required.** Two double-clicks: install, then run. Opens in your browser.
 
@@ -73,15 +74,19 @@ Recording a call is easy; turning it into shareable minutes is the slog — espe
    **shared-screen screenshots** (untick any you don't want), and a choice of two ways
    to write the MoM:
    - **✨ Best quality — Google Gemini:** click **Copy Gemini prompt**, paste into Gemini,
-     drag in the captured screenshots (the folder opens for you) → paste the styled
-     result into Gmail.
+     drag in the captured screenshots (the folder opens for you) → put the returned
+     `SUBJECT:` line in Gmail's subject field and paste the styled HTML into the body.
    - **🔒 Private & offline:** click **Generate styled MoM** to draft it locally with your
      Ollama model — same styled email with the screenshots embedded, 100% offline, no
      tokens. Then **Copy for Gmail**.
 
-Both paths produce the **same styled email** (title, attendee chips, status box,
-discussion cards, colour-coded action items). A bigger local model (`qwen2.5:14b`)
-gives richer offline drafts on a 24 GB Mac.
+Both paths produce the **same styled email** — subject line, title, attendee chips,
+status box, discussion cards, and action items grouped into New / Carried Forward /
+Closed — and both apply [the same reasoning standard](#-the-quality-standard). The
+offline path shows the generated subject above the preview with a Copy button. A
+bigger local model (`qwen2.5:14b`) gives richer offline drafts on a 24 GB Mac; the
+reasoning rules ask more of the model, so on a 7B model expect the decomposition
+and critical-path framing to be thinner than the Gemini path.
 
 > **Before a long run**, the log prints a one-line **capability check** — engine in use,
 > whether on-screen speaker names are possible, and whether audio diarization is available —
@@ -132,6 +137,58 @@ Results are also saved to `~/Documents/MoM Outputs/<recording-name>-<timestamp>/
 
 ---
 
+## 🧭 The quality standard
+
+Styling was never the hard part. The difference between a readable summary and
+minutes people act on is **reasoning**, and it is now written into every prompt
+path — the Gemini prompt, the offline JSON prompt, and both markdown prompts —
+rather than living in the author's head.
+
+Twelve rules, applied wherever the transcript supports them. The ones that change
+the output most:
+
+| | |
+|---|---|
+| **Every topic resolves** | A discussion point ends in a decision — or, when nothing was settled, in the *decomposition*: the specific questions that must be answered first, who answers each, and what approval is needed. "This was discussed" is named as the failure mode to avoid. |
+| **Name the critical path** | Usually one open item gates the rest. The minutes say so in those terms, and that item is marked `Blocking` with an owner and a date. |
+| **Keep the team un-idle** | When a decision waits on someone outside the room, the parallel track that runs meanwhile is recorded — and why. |
+| **Hold scope** | What is in the MVP and what defers to a later phase are both stated. Deferral is a decision, recorded with its interim workaround. |
+| **Restate re-opened history** | The prior decision, its date, and the reason it was taken — before re-litigating it. |
+| **Ask for the number that decides** | "Some cases are complex" becomes an action item for the count or percentage, plus what that number decides. |
+| **Be honest about the unknowable** | No invented confidence, no fabricated effort ranges. |
+| **Ownership discipline** | Nothing commits DH/Central to a deliverable, date or capability the transcript doesn't show them committing to themselves. |
+
+### 🚨 Blocking is not 🛑 Blocked
+
+| | Meaning | Example |
+|---|---|---|
+| 🚨 **Blocking** | On the critical path. Other work waits on **this**. | "Confirm whether the domain is manageable by us." |
+| 🛑 **Blocked** | Cannot start until something else is done. **This** is waiting. | "PoC build — gated on credentials." |
+
+A MoM that marks both as "Blocked" tells the reader nothing about where to push.
+⏳ **Awaiting** is the third case: sitting with a third party, nothing for us to do.
+
+### Action items come in three groups
+
+**New** → **Carried Forward** → **Closed**. Closed isn't padding — it's what shows
+the ledger moving, and it's what lets the opening line say *"three open points
+closed; two new items now sit on the critical path."* Empty groups are omitted.
+
+> **[`examples/reference-mom.md`](examples/reference-mom.md)** is a full worked
+> example at this bar, annotated with which rule each passage demonstrates, and
+> ending with the same meeting written badly so the difference is concrete. Its
+> content is fictional — this repository is public, so no real meeting material
+> lives in it.
+
+**Tuning the standard:** it lives in the `REASONING STANDARD` block, which appears
+in `Gemini MoM Prompt.md` and three times in the Python (`MOM_JSON_INSTRUCTIONS`
+and `PROMPT_TEMPLATE` in `server.py`, `PROMPT_TEMPLATE` in `summarize_mom.py`).
+`test_speaker_naming.py` asserts all four stay in step and that the prompts and the
+HTML renderer agree on every field name, so an edit can't silently start emitting
+fields the template drops.
+
+---
+
 ## 🤝 Share it with a colleague
 
 Send them this **whole folder** (zip it). On their Mac, no commands needed:
@@ -173,7 +230,8 @@ The name-detection geometry is overridable via env vars (`MOM_OCR_RIGHT_MIN_X`,
 | `server.py` | The web app + pipeline (Python standard library only — calls whisper.cpp/Ollama as subprocesses) |
 | `ocr_speakers.py` | Reads on-screen speaker names from the video (Apple Vision OCR) |
 | `summarize_mom.py` | Step 3 helper (transcript → MoM via Ollama) |
-| `Gemini MoM Prompt.md` | The reusable styling prompt that reproduces the MoM email look in Gemini every meeting |
+| `Gemini MoM Prompt.md` | The reusable prompt — the locked visual template **and** the reasoning standard |
+| `examples/reference-mom.md` | Worked reference at the intended quality bar, annotated rule by rule (fictional content) |
 | `run_mom.sh` | Headless CLI for the full pipeline |
 | `setup.sh` | The actual installer (ffmpeg, whisper.cpp, Apple Vision OCR, Ollama, model) |
 | `test_speaker_naming.py` | Unit tests for the OCR / model-discovery / overwrite-guard logic |

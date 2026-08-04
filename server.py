@@ -176,12 +176,43 @@ Rules:
   - If an action item's owner is not clearly stated, set Owner to "⚠️ owner not stated". Do not guess.
   - Never invent decisions, commitments, dates, numbers, names, or owners. If something is only implied, put it under Open Questions or label it "(assumption)".
 - Flag assumptions explicitly.
-- Use these sections, in this order: Attendees, Executive Summary, Key Decisions, Ownership Split, Action Items, Open Questions, Risks, Next Decision.
+- Use these sections, in this order: Attendees, Executive Summary, Key Decisions, Ownership Split, Action Items, Also Discussed, Open Questions, Risks, Next Decision.
 - Format the whole MoM as GitHub-flavoured Markdown: a single "# Minutes of Meeting" title, then each section title as a "## " heading (e.g. "## Executive Summary"); use bullet lists and **bold** for inline labels.
 - Attendees section: list the provided attendees; mark anyone never clearly referenced in the transcript as "(listed; not clearly identified in audio)". If no list was provided, write "No attendee list provided."
 - Use red/yellow/green status signals (🔴/🟡/🟢) for risk and priority.
-- Action Items MUST be a markdown table with columns: Action | Owner | Due | Status. Owner must be a name from the Attendees list or "⚠️ owner not stated".
+- Action Items MUST be a markdown table with columns: Action | Owner | Due | Status | Group. Owner must be a name from the Attendees list or "⚠️ owner not stated". Status is one of Blocking / In Progress / Blocked / Awaiting / Pending / Done. Group is New, Carried Forward, or Closed. Due is a date or an explicit gating condition ("Gated on domain", "After credentials").
 - Be faithful to the transcript; do not invent.
+
+REASONING STANDARD (this is the substance of the job, not an optional extra).
+You are not transcribing a meeting. You are recording what it RESOLVED and what it LEFT
+OPEN, so a reader who was not there knows what moves next and who holds it. Apply every
+rule the transcript supports; never manufacture material to satisfy one.
+1. Every key topic resolves. It ends either in a decision, or — when nothing was settled —
+   in the DECOMPOSITION: the specific questions that must be answered before it can be
+   decided, who answers each, and what approval is needed. Never write "this was
+   discussed" and stop. That is the failure mode to avoid.
+2. Name the critical path. Usually one open item gates the rest. Say so in those terms
+   ("if this is not closed, nothing else moves") and mark that action item "Blocking",
+   with an owner and a date.
+3. Keep the team un-idle. When a decision depends on someone outside the room, record the
+   parallel track that runs meanwhile, and say why.
+4. Hold scope. When a request grows effort, state what is in the MVP and what defers to a
+   later phase. Deferral is a decision — record it as one.
+5. Re-opened decisions get their history restated: the prior decision, its date, and the
+   reason it was taken, before the new discussion.
+6. Ask for the number that decides. If something affects "some" or "several" cases, the
+   action item is to get the count or percentage, and say why it matters.
+7. State the reasoning that makes a proposal moot. If a stated fact rules an approach out,
+   follow the chain and say so explicitly.
+8. Be honest about what cannot be estimated. Do not invent confidence or ranges.
+9. Put settled facts and low-salience items under "Also Discussed", saying why they are
+   recorded (e.g. so everyone works from the same understanding).
+10. "Blocking" and "Blocked" are DIFFERENT and must not be conflated:
+    Blocking = on the critical path, other work waits on it;
+    Blocked  = cannot start until something else is done.
+
+TONE: understated, declarative, specific. Short sentences. "We" for the team. No
+enthusiasm adverbs, no "great discussion", no "aligned on", no filler.
 - The transcript is machine-transcribed: English technical terms embedded in Greek speech may be phonetically garbled (e.g. a product name rendered as similar-sounding Greek). Restore the intended term when it is obvious from context; if unsure, keep the transcript wording.
 
 Transcript:
@@ -891,17 +922,60 @@ if the owner is unclear write "⚠️ owner not stated" — never guess a name.
 The transcript is machine-transcribed: English technical terms embedded in Greek speech may be phonetically garbled (e.g. a product name rendered as similar-sounding Greek). Restore the intended term when it is obvious from context; if unsure, keep the transcript wording.
 Preserve the efood/Foody (local) vs DH/Central (global) ownership nuance.
 
+REASONING STANDARD — the substance of the job, not an optional extra.
+You are not transcribing a meeting. You are recording what it RESOLVED and what it
+LEFT OPEN, so a reader who was not there knows what moves next and who holds it.
+Apply every rule the transcript supports; never manufacture material to satisfy one.
+1. Every discussion point resolves. Each topic ends either in a real "decision", or —
+   when nothing was settled — in the DECOMPOSITION: the specific questions that must be
+   answered before it can be decided, who answers each, and what approval is needed.
+   Never write "this was discussed" and stop. That is the failure mode to avoid.
+2. Name the critical path. Usually one open item gates the rest. Say so in those terms
+   ("if this is not closed, nothing else moves") and give that action item status
+   "blocking" with an owner and a date.
+3. Keep the team un-idle. When a decision depends on someone outside the room, record
+   the parallel track that runs meanwhile, and say why ("so we are not idle").
+4. Hold scope. When a request grows effort, state what is in the MVP and what defers to
+   a later phase. Deferral is a decision — record it as one.
+5. Re-opened decisions get their history restated: the prior decision, its date, and the
+   reason it was taken, before the new discussion.
+6. Ask for the number that decides. If something affects "some" or "several" cases, the
+   action item is to get the count or percentage, and say why it matters.
+7. State the reasoning that makes a proposal moot. If a stated fact rules an approach
+   out, follow the chain and say so explicitly.
+8. Be honest about what cannot be estimated. Do not invent confidence or ranges.
+9. Record non-decisions that align understanding under "also_discussed", saying why they
+   are recorded.
+10. Ownership discipline: never write a sentence that commits DH/Central to a deliverable,
+    date or capability unless the transcript shows them committing to it themselves.
+    Where a dependency sits with them, write it as a dependency, not a promise.
+11. Every blocking or in-progress item has an owner AND a date — or an explicit gating
+    condition in place of the date ("Gated on domain", "After credentials").
+12. "blocking" and "blocked" are DIFFERENT and must not be conflated:
+    blocking = on the critical path, other work waits on it;
+    blocked  = cannot start until something else is done.
+
+TONE: understated, declarative, specific. Short sentences. "We" for the team. No
+enthusiasm adverbs, no "great discussion", no "aligned on", no filler.
+
 JSON schema (use exactly these keys; omit nothing — use [] or "" when empty):
 {
+  "subject": "[MoM] <workstream> — <DD/MM>: <what changed>  (state the CHANGE, not the topic)",
   "title": "short meeting title",
-  "subtitle": "one-line subtitle, e.g. 'X - Minutes of Meeting'",
+  "subtitle": "one-line subtitle, e.g. 'Working session DD/MM — Minutes of Meeting'",
+  "opener": "one sentence of delta — how the open-item ledger moved, e.g. 'Three open points closed; two new items now sit on the critical path.' Use '' if the transcript does not support a count.",
   "attendees": ["Full Name", ...],
   "latest_status": [ {"headline": "short bold lead", "detail": "1-2 sentences"} ],
   "agenda": ["agenda point", ...],
-  "discussion": [ {"topic": "topic name", "summary": "what was discussed", "decision": "decision if any, else ''", "screens": [1]} ],
-  "action_items": [ {"text": "the task", "assignee": "name or team or '⚠️ owner not stated'", "status": "done|in_progress|blocked|pending", "note": "optional context or blocker, else ''"} ]
+  "discussion": [ {"topic": "topic name", "status_tag": "verdict tag for the heading, e.g. 'New Blocker' / 'Re-opened' / 'Confirmed' / 'Closed', else ''", "summary": "what was discussed and the reasoning that matters", "decision": "what was decided — or the questions that must be answered first and who answers them", "target": "when it should be resolved by, else ''", "screens": [1]} ],
+  "also_discussed": [ {"headline": "short bold lead", "detail": "1-2 sentences — what it is and why it is recorded"} ],
+  "action_items": [ {"text": "the task", "assignee": "name or team or '⚠️ owner not stated'", "group": "new|carried|closed", "due": "a date like '05/08', or a gating condition like 'Gated on domain' / 'After credentials', else ''", "status": "blocking|in_progress|blocked|awaiting|pending|done", "note": "optional context or blocker, else ''"} ],
+  "closing": "the working cadence agreed for between now and the next sync, if the transcript states one, else ''"
 }
 Keep it concise and skimmable. Base 'latest_status' on the newest blockers/updates (may be []).
+Action item groups: "new" = raised in this meeting; "carried" = still open from a previous
+meeting; "closed" = completed since the last meeting (use status "done"). Every item needs
+a "group"; default to "new" when the transcript does not say otherwise.
 If a "SCREENS SHARED" section is present below, use each screen's on-screen text as
 meeting context, and set each discussion item's "screens" to the SCREEN numbers that
 belong to that topic (judge by content and timing). A screen belongs to at most one
@@ -976,7 +1050,38 @@ _STATUS = {
                         title="rgb(15,23,42)", strike=False, sub="rgb(100,116,139)",
                         badge_bg="", badge_fg="rgb(100,116,139)",
                         badge_bd="rgb(203,213,225)", label="Pending"),
+    # "Blocking" is NOT "Blocked": this item sits on the critical path and other
+    # work waits on it, so it gets its own amber card to stand out from the
+    # red "cannot start yet" cards.
+    "blocking":    dict(emoji="\U0001f6a8", bg="rgb(255,247,237)", bd="rgb(254,215,170)",
+                        title="rgb(154,52,18)", strike=False, sub="rgb(194,65,12)",
+                        badge_bg="rgb(255,237,213)", badge_fg="rgb(234,88,12)",
+                        badge_bd="rgb(253,186,116)", label="Blocking"),
+    "awaiting":    dict(emoji="⏳", bg="rgb(248,250,252)", bd="rgb(226,232,240)",
+                        title="rgb(15,23,42)", strike=False, sub="rgb(100,116,139)",
+                        badge_bg="rgb(241,245,249)", badge_fg="rgb(71,85,105)",
+                        badge_bd="rgb(203,213,225)", label="Awaiting"),
 }
+
+# Action-item groups, in render order. "closed" last so the ledger reads
+# new work -> still open -> done.
+_GROUPS = [("new", "Action Items — New"),
+           ("carried", "Action Items — Carried Forward"),
+           ("closed", "Action Items — Closed")]
+
+_DATEISH = re.compile(r"^\d{1,2}[/.-]\d{1,2}([/.-]\d{2,4})?$")
+
+
+def _due_text(due, status):
+    """Render the due field the way the reference MoM does: a bare date gets a
+    'Due ' prefix, a gating condition ('Gated on domain', 'After credentials')
+    is used verbatim, and a closed item's date reads as the completion date."""
+    due = (due or "").strip()
+    if not due:
+        return ""
+    if _DATEISH.match(due):
+        return due if status == "done" else f"Due {due}"
+    return due
 
 
 def _screen_card_html(sc, num, outdir):
@@ -1013,6 +1118,9 @@ def mom_json_to_email_html(d, greeting="", screens=None, outdir=None):
     if greeting:
         for para in [p for p in greeting.split("\n") if p.strip()]:
             out.append(f'<p style="color:rgb(16,16,16);font-size:14px;margin:0 0 12px">{e(para)}</p>')
+    # Delta opener — how the open-item ledger moved since the last sync.
+    if d.get("opener"):
+        out.append(f'<p style="color:rgb(16,16,16);font-size:14px;margin:0 0 16px">{e(d["opener"])}</p>')
     # Title + subtitle
     if d.get("title"):
         out.append(f'<h1 style="margin:0;color:rgb(37,99,235);font-size:26px;font-weight:bold;letter-spacing:-0.5px">{e(d["title"])}</h1>')
@@ -1050,12 +1158,18 @@ def mom_json_to_email_html(d, greeting="", screens=None, outdir=None):
     if disc:
         out.append('<h2 style="font-size:18px;color:rgb(15,23,42);border-left:4px solid rgb(59,130,246);padding-left:12px;margin:0 0 20px">Discussion Points</h2>')
         for i, dp in enumerate(disc, 1):
-            out.append(f'<h3 style="margin:0 0 6px;font-size:16px;color:rgb(76,29,149)">{i}. {e(dp.get("topic",""))}</h3>')
+            # The heading carries the verdict ("— New Blocker", "— Re-opened"),
+            # so the topic list alone reads as a status summary.
+            tag = (dp.get("status_tag") or "").strip()
+            head = f'{i}. {e(dp.get("topic",""))}' + (f' — {e(tag)}' if tag else "")
+            out.append(f'<h3 style="margin:0 0 6px;font-size:16px;color:rgb(76,29,149)">{head}</h3>')
             out.append('<div style="border-left:3px solid rgb(139,92,246);background-color:rgb(250,245,255);padding:15px 18px;margin-bottom:15px;border-radius:0 8px 8px 0">')
             if dp.get("summary"):
                 out.append(f'<p style="margin:0;color:rgb(71,85,105);line-height:1.6;font-size:14px">{e(dp["summary"])}</p>')
             if dp.get("decision"):
                 out.append(f'<p style="margin:8px 0 0;color:rgb(71,85,105);line-height:1.6;font-size:14px"><strong>Decision:</strong> {e(dp["decision"])}</p>')
+            if dp.get("target"):
+                out.append(f'<p style="margin:8px 0 0;color:rgb(124,58,237);line-height:1.6;font-size:14px"><strong>Target:</strong> {e(dp["target"])}</p>')
             # Screenshots the model mapped to this topic (1-based SCREEN numbers).
             for k in (dp.get("screens") or []):
                 try:
@@ -1072,24 +1186,56 @@ def mom_json_to_email_html(d, greeting="", screens=None, outdir=None):
         out.append('<h2 style="font-size:18px;color:rgb(15,23,42);border-left:4px solid rgb(59,130,246);padding-left:12px;margin:24px 0 20px">Shared screens</h2>')
         for k in rest:
             out.append(_screen_card_html(screens[k - 1], k, outdir))
-    # Action items (status cards)
+    # Also discussed — settled facts and low-salience items, recorded so everyone
+    # works from the same understanding rather than dropped.
+    also = d.get("also_discussed") or []
+    if also:
+        out.append('<h2 style="font-size:18px;color:rgb(15,23,42);border-left:4px solid rgb(59,130,246);padding-left:12px;margin:24px 0 15px">Also Discussed</h2>')
+        out.append('<div style="background-color:rgb(248,250,252);border:1px solid rgb(226,232,240);padding:16px 18px;border-radius:8px;margin-bottom:24px">')
+        for it in also:
+            head = e(it.get("headline", "")); det = e(it.get("detail", ""))
+            lead = f'<strong>{head}</strong> ' if head else ""
+            out.append(f'<p style="margin:0 0 10px;color:rgb(71,85,105);line-height:1.6;font-size:14px">{lead}{det}</p>')
+        out.append('</div>')
+    # Action items (status cards), split into New / Carried Forward / Closed so
+    # the reader can see the ledger move. Unknown groups fall back to "new".
     ai = d.get("action_items") or []
     if ai:
-        out.append('<h2 style="font-size:18px;color:rgb(15,23,42);border-left:4px solid rgb(59,130,246);padding-left:12px;margin:24px 0 20px">Action Items</h2>')
-        for it in ai:
-            s = _STATUS.get((it.get("status") or "pending").lower().replace(" ", "_"), _STATUS["pending"])
-            deco = ";text-decoration:line-through" if s["strike"] else ""
-            out.append(f'<table width="100%" cellpadding="12" cellspacing="0" border="0" style="margin-bottom:12px;background-color:{s["bg"]};border:1px solid {s["bd"]};border-radius:8px"><tbody><tr>')
-            out.append(f'<td width="30" valign="top" style="font-size:18px">{s["emoji"]}</td><td valign="top">')
-            out.append(f'<div style="font-size:15px;font-weight:bold;color:{s["title"]};margin-bottom:4px{deco}">{e(it.get("text",""))}</div>')
-            if it.get("assignee"):
-                out.append(f'<div style="font-size:13px;color:{s["sub"]}">Assignee: <span style="color:rgb(99,102,241)">{e(it["assignee"])}</span></div>')
-            if it.get("note"):
-                out.append(f'<div style="font-size:13px;color:rgb(148,163,184);margin-top:5px;font-style:italic">{e(it["note"])}</div>')
-            badge_bg = f'background-color:{s["badge_bg"]};' if s["badge_bg"] else ""
-            out.append(f'</td><td width="100" valign="top" align="right"><span style="{badge_bg}color:{s["badge_fg"]};font-size:12px;font-weight:600;padding:4px 10px;border-radius:12px;border:1px solid {s["badge_bd"]}">{s["label"]}</span></td>')
-            out.append('</tr></tbody></table>')
-    out.append('<p style="color:rgb(51,65,85);font-size:14px;margin:20px 0 0">Thank you,</p>')
+        known = {g for g, _ in _GROUPS}
+
+        def group_of(it):
+            g = (it.get("group") or "").strip().lower()
+            return g if g in known else "new"
+
+        for gid, heading in _GROUPS:
+            items = [it for it in ai if group_of(it) == gid]
+            if not items:
+                continue
+            out.append(f'<h2 style="font-size:18px;color:rgb(15,23,42);border-left:4px solid rgb(59,130,246);padding-left:12px;margin:24px 0 20px">{heading}</h2>')
+            for it in items:
+                status = (it.get("status") or "pending").lower().replace(" ", "_")
+                s = _STATUS.get(status, _STATUS["pending"])
+                deco = ";text-decoration:line-through" if s["strike"] else ""
+                out.append(f'<table width="100%" cellpadding="12" cellspacing="0" border="0" style="margin-bottom:12px;background-color:{s["bg"]};border:1px solid {s["bd"]};border-radius:8px"><tbody><tr>')
+                out.append(f'<td width="30" valign="top" style="font-size:18px">{s["emoji"]}</td><td valign="top">')
+                out.append(f'<div style="font-size:15px;font-weight:bold;color:{s["title"]};margin-bottom:4px{deco}">{e(it.get("text",""))}</div>')
+                due = _due_text(it.get("due"), status)
+                if it.get("assignee") or due:
+                    lead = "Completed by " if status == "done" else "Assignee: "
+                    who = (f'<span style="color:rgb(99,102,241)">{e(it["assignee"])}</span>'
+                           if it.get("assignee") else "")
+                    meta = f'{lead}{who}' if who else ""
+                    if due:
+                        meta = f'{meta} · {e(due)}' if meta else e(due)
+                    out.append(f'<div style="font-size:13px;color:{s["sub"]}">{meta}</div>')
+                if it.get("note"):
+                    out.append(f'<div style="font-size:13px;color:rgb(148,163,184);margin-top:5px;font-style:italic">{e(it["note"])}</div>')
+                badge_bg = f'background-color:{s["badge_bg"]};' if s["badge_bg"] else ""
+                out.append(f'</td><td width="100" valign="top" align="right"><span style="{badge_bg}color:{s["badge_fg"]};font-size:12px;font-weight:600;padding:4px 10px;border-radius:12px;border:1px solid {s["badge_bd"]}">{s["label"]}</span></td>')
+                out.append('</tr></tbody></table>')
+    if d.get("closing"):
+        out.append(f'<p style="color:rgb(51,65,85);font-size:14px;margin:24px 0 0">{e(d["closing"])}</p>')
+    out.append('<p style="color:rgb(51,65,85);font-size:14px;margin:16px 0 0">Thank you,</p>')
     out.append('</div>')
     return "\n".join(out)
 
@@ -1417,7 +1563,8 @@ class Handler(BaseHTTPRequestHandler):
                     f.write(htmlout + "\n")
             except OSError:
                 pass
-        self._send(200, json.dumps({"html": htmlout, "model": model}))
+        self._send(200, json.dumps({"html": htmlout, "model": model,
+                                    "subject": data.get("subject", "")}))
 
     def handle_gemini_prompt(self, jid, shots=""):
         """Return the reusable Gemini styling prompt with this job's transcript
@@ -1716,6 +1863,15 @@ INDEX_HTML = r"""<!DOCTYPE html>
              border:1px solid #fecaca; border-radius:6px; padding:1px 8px; }
   .cap-fix.opt { color:#92400e; background:var(--amber-tint); border-color:var(--amber-border); }
 
+  /* generated email subject line (goes in Gmail's Subject field, not the body) */
+  #subjectRow { display:flex; align-items:center; gap:10px; margin:14px 0 10px; padding:10px 14px;
+                border:1px solid var(--border-strong); border-radius:8px; background:var(--panel);
+                font-size:13.5px; color:var(--text); }
+  #subjectRow .sr-label { flex-shrink:0; font-size:11px; font-weight:600; letter-spacing:.04em;
+                          text-transform:uppercase; color:var(--muted); }
+  #subjectText { flex:1; font-weight:500; word-break:break-word; }
+  #subjectRow button.ghost { flex-shrink:0; padding:6px 12px; font-size:12px; }
+
   /* processing stage cards */
   .steps { display:flex; gap:10px; margin:2px 0 16px; flex-wrap:wrap; }
   .step { flex:1; min-width:150px; background:var(--panel2); border:1px solid var(--border); border-radius:8px;
@@ -1976,6 +2132,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     </div>
     <div id="savedLoc" class="saved-loc hidden"></div>
 
+    <div id="subjectRow" class="hidden"><span class="sr-label">Subject</span><span id="subjectText"></span><button class="ghost" id="copySubjectBtn" title="Copy the subject line for Gmail">Copy</button></div>
     <div id="momHead" class="hidden"><svg class="ic"><use href="#i-eye"/></svg> Preview — pastes into Gmail as-is</div>
     <div id="mom"></div>
     <details>
@@ -1987,7 +2144,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
 <script>
 const $ = s => document.querySelector(s);
-let chosenFile = null, currentJob = null, momText = "", transcriptText = "", styledHtml = "", currentOutdir = "", currentScreens = [];
+let chosenFile = null, currentJob = null, momText = "", transcriptText = "", styledHtml = "", momSubject = "", currentOutdir = "", currentScreens = [];
 // D1/D2/D3 run-scoped state
 let healthCap = null;      // capability summary from /health (D1)
 let wantMom = false;       // did this run request a local MoM?
@@ -2136,7 +2293,8 @@ function beginRun(phase){
   isVideoInput = guessIsVideo((chosenFile && chosenFile.name) || $('#path').value || $('#url').value);
   if(!wantMom) setStep('mom','skipped','Not requested — transcript only');
   $('#progFill').style.width='0'; setIndet(true); setPhase(phase); startTimer();
-  momText = ""; styledHtml = ""; currentOutdir=""; currentScreens=[]; $('#mom').innerHTML = '';
+  momText = ""; styledHtml = ""; momSubject = ""; currentOutdir=""; currentScreens=[]; $('#mom').innerHTML = '';
+  $('#subjectRow').classList.add('hidden');
   $('#screensPanel').classList.add('hidden');
   window.scrollTo({top: $('#progCard').offsetTop-20, behavior:'smooth'});
 }
@@ -2439,6 +2597,9 @@ $('#styledBtn').onclick = async () => {
     else {
       styledHtml = d.html;
       $('#mom').innerHTML = styledHtml;
+      momSubject = d.subject || '';
+      $('#subjectText').textContent = momSubject;
+      $('#subjectRow').classList.toggle('hidden', !momSubject);
       $('#momHead').classList.remove('hidden');
       $('#momActions').classList.remove('hidden');
       $('#resultCard').classList.remove('hidden');
@@ -2447,6 +2608,11 @@ $('#styledBtn').onclick = async () => {
     }
   } catch(e){ alert('Local MoM failed'); b.innerHTML=orig; }
   b.disabled=false;
+};
+
+$('#copySubjectBtn').onclick = async () => {
+  if(!momSubject) return;
+  try { await navigator.clipboard.writeText(momSubject); flash('#copySubjectBtn','Copied'); } catch(e){}
 };
 
 $('#copyRichBtn').onclick = async () => {
@@ -2509,7 +2675,8 @@ function renderMd(md,S){
 // ---- resume + recent results ----
 function renderResult(d){
   momText = d.markdown || '';
-  styledHtml = '';
+  styledHtml = ''; momSubject = '';
+  $('#subjectRow').classList.add('hidden');
   if(d.transcript) transcriptText = d.transcript;
   $('#mom').innerHTML = momText ? renderMd(momText) : '';
   $('#resultCard').classList.remove('hidden');

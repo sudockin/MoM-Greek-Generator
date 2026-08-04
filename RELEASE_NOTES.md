@@ -1,4 +1,4 @@
-# 📝 MoM Generator — v1.2
+# 📝 MoM Generator — v1.3
 
 **Turn a meeting recording into a polished, English Minutes‑of‑Meeting email — even if the meeting was in Greek — without anything leaving your Mac.**
 
@@ -6,7 +6,53 @@ Drop in a Google Meet / Teams recording. Out comes a clean transcript that alrea
 
 ---
 
-## 🆕 What's new in v1.2 — the screen share makes it into the notes
+## 🆕 What's new in v1.3 — minutes that reason, not just summarise
+
+v1.2 made the minutes *look* right every time. v1.3 makes them *think* right every time. The gap between a readable summary and minutes people can act on is reasoning, and that reasoning is now written into every prompt path instead of living in the author's head.
+
+### 🧠 A reasoning standard, enforced in all four prompts
+
+Every prompt (Gemini, offline JSON, and both markdown paths) now carries the same twelve‑rule standard. The rules that change the output most:
+
+- **Every discussion point resolves.** A topic ends in a decision — or, when nothing was settled, in the *decomposition*: the specific questions that must be answered first, who answers each, and what approval is needed. "This was discussed" is explicitly named as the failure mode to avoid.
+- **The critical path gets named.** Usually one open item gates the rest; the minutes now say so in those terms and mark that item `Blocking` with an owner and a date.
+- **Parallel tracks, so nobody is idle.** When a decision waits on someone outside the room, the minutes record what runs in the meantime, and why.
+- **Scope is held.** What's in the MVP and what defers to a later phase are both stated — deferral is recorded as a decision, with the interim workaround.
+- **Re‑opened decisions get their history restated** — the prior decision, its date, and the reason it was taken, before re‑litigating.
+- **Ask for the number that decides.** "Some cases are complex" becomes an action item for the count or percentage, plus what that number decides.
+- **Honest about the unknowable.** No invented confidence or fabricated effort ranges.
+- **Ownership discipline.** Nothing commits DH/Central to a deliverable, date, or capability the transcript doesn't show them committing to themselves.
+
+### 🚨 `Blocking` is no longer the same as `Blocked`
+
+The distinction that tells the reader where to push:
+
+- 🚨 **Blocking** — on the critical path; other work waits on *this*. Its own amber card.
+- 🛑 **Blocked** — cannot start until something else is done; *this* is waiting.
+
+Also new: ⏳ **Awaiting**, for items sitting with a third party where there is nothing for us to do.
+
+### 🗂️ Action items in three groups
+
+**New** → **Carried Forward** → **Closed**. The Closed group isn't padding — it's what shows the ledger moving, and it's what lets the opening line say "three open points closed; two new items now sit on the critical path." Empty groups are omitted.
+
+### ✉️ A subject line you can copy
+
+The generator now writes the subject too, in the form `[MoM] <workstream> — <DD/MM>: <what changed>` — the part after the colon states the *change*, not the topic. It appears above the preview with a Copy button.
+
+### ➕ Also
+
+- **Discussion headings carry the verdict** — `Declared Domain Ownership — New Blocker`, `Hosting Cluster — Re‑opened` — so the topic list alone reads as a status summary.
+- **`Target:` line** on any discussion point with a resolution date.
+- **`Also Discussed` section** for settled facts and low‑salience items, recorded with the reason they're there rather than dropped.
+- **Due dates and gating conditions** on action items: a bare date renders as `Due 05/08`, a condition renders verbatim (`Gated on domain`, `After credentials`).
+- **A closing cadence line**, so the default assumption isn't that everything waits for the next sync.
+- **[`examples/reference-mom.md`](examples/reference-mom.md)** — a worked reference at the intended quality bar, annotated with which rule each passage demonstrates, plus a side‑by‑side of what a failing MoM looks like. Content is fictional; this repo is public.
+- **Tests** covering grouping, status vocabulary, escaping, and a contract test asserting the prompts and the renderer agree on every field name — so a prompt edit can't silently start emitting fields the template drops.
+
+---
+
+## What's new in v1.2 — the screen share makes it into the notes
 
 Meetings aren't only talk. When someone presents, **what was on screen is now part of the MoM** — and the transcript itself got noticeably sharper.
 

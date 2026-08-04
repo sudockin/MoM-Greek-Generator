@@ -367,5 +367,158 @@ class OverwriteGuard(unittest.TestCase):
         self.assertFalse(self.should_overwrite("", []))
 
 
+class DueText(unittest.TestCase):
+    """A bare date gets a 'Due ' prefix; a gating condition is used verbatim;
+    a completed item's date reads as the completion date."""
+
+    def test_date_gets_due_prefix(self):
+        self.assertEqual(server._due_text("05/08", "blocking"), "Due 05/08")
+        self.assertEqual(server._due_text("5.8.2026", "pending"), "Due 5.8.2026")
+
+    def test_done_date_has_no_prefix(self):
+        self.assertEqual(server._due_text("04/08", "done"), "04/08")
+
+    def test_gating_condition_verbatim(self):
+        self.assertEqual(server._due_text("Gated on domain", "blocked"), "Gated on domain")
+        self.assertEqual(server._due_text("After credentials", "pending"), "After credentials")
+
+    def test_empty(self):
+        self.assertEqual(server._due_text("", "pending"), "")
+        self.assertEqual(server._due_text(None, "pending"), "")
+
+
+class MomEmailRendering(unittest.TestCase):
+    """The reference-MoM structure must survive the deterministic renderer."""
+
+    def render(self, **over):
+        d = {"title": "T", "subtitle": "S", "attendees": ["Alex Rivera"]}
+        d.update(over)
+        return server.mom_json_to_email_html(d)
+
+    def test_blocking_and_blocked_are_distinct(self):
+        self.assertNotEqual(server._STATUS["blocking"]["label"],
+                            server._STATUS["blocked"]["label"])
+        self.assertNotEqual(server._STATUS["blocking"]["bg"],
+                            server._STATUS["blocked"]["bg"])
+        html = self.render(action_items=[
+            {"text": "Gating check", "status": "blocking", "group": "new"},
+            {"text": "Downstream build", "status": "blocked", "group": "new"},
+        ])
+        self.assertIn(">Blocking<", html)
+        self.assertIn(">Blocked<", html)
+
+    def test_action_items_grouped_in_order(self):
+        html = self.render(action_items=[
+            {"text": "old one", "status": "pending", "group": "carried"},
+            {"text": "shipped", "status": "done", "group": "closed"},
+            {"text": "fresh", "status": "blocking", "group": "new"},
+        ])
+        i_new = html.index("Action Items — New")
+        i_carried = html.index("Action Items — Carried Forward")
+        i_closed = html.index("Action Items — Closed")
+        self.assertLess(i_new, i_carried)
+        self.assertLess(i_carried, i_closed)
+
+    def test_unknown_or_missing_group_falls_back_to_new(self):
+        html = self.render(action_items=[
+            {"text": "no group", "status": "pending"},
+            {"text": "nonsense group", "status": "pending", "group": "banana"},
+        ])
+        self.assertIn("Action Items — New", html)
+        self.assertNotIn("Action Items — Carried Forward", html)
+        self.assertIn("no group", html)
+        self.assertIn("nonsense group", html)
+
+    def test_empty_groups_are_omitted(self):
+        html = self.render(action_items=[{"text": "x", "status": "pending", "group": "new"}])
+        self.assertNotIn("Carried Forward", html)
+        self.assertNotIn("Action Items — Closed", html)
+
+    def test_done_item_reads_completed_by(self):
+        html = self.render(action_items=[
+            {"text": "x", "status": "done", "group": "closed",
+             "assignee": "Alex Rivera", "due": "04/08"}])
+        self.assertIn("Completed by ", html)
+        self.assertIn("04/08", html)
+        self.assertNotIn("Due 04/08", html)
+
+    def test_open_item_reads_assignee_and_due(self):
+        html = self.render(action_items=[
+            {"text": "x", "status": "blocking", "group": "new",
+             "assignee": "Alex Rivera", "due": "05/08"}])
+        self.assertIn("Assignee: ", html)
+        self.assertIn("Due 05/08", html)
+
+    def test_status_tag_and_target_render(self):
+        html = self.render(discussion=[
+            {"topic": "Domain ownership", "status_tag": "New Blocker",
+             "summary": "sum", "decision": "dec", "target": "end of next week"}])
+        self.assertIn("1. Domain ownership — New Blocker", html)
+        self.assertIn("<strong>Decision:</strong>", html)
+        self.assertIn("<strong>Target:</strong>", html)
+        self.assertIn("end of next week", html)
+
+    def test_discussion_without_tag_has_no_dangling_dash(self):
+        html = self.render(discussion=[{"topic": "Plain topic", "summary": "s"}])
+        self.assertIn("1. Plain topic<", html)
+
+    def test_opener_and_closing(self):
+        html = self.render(opener="Two closed; one new on the critical path.",
+                           closing="Anything new goes straight to Slack.")
+        self.assertIn("Two closed; one new on the critical path.", html)
+        self.assertIn("Anything new goes straight to Slack.", html)
+        self.assertIn("Thank you,", html)
+
+    def test_also_discussed_section(self):
+        html = self.render(also_discussed=[
+            {"headline": "Year-end deadline.", "detail": "No penalty attached."}])
+        self.assertIn("Also Discussed", html)
+        self.assertIn("<strong>Year-end deadline.</strong>", html)
+        self.assertIn("No penalty attached.", html)
+
+    def test_optional_blocks_omitted_when_absent(self):
+        html = self.render()
+        for absent in ("Also Discussed", "Action Items", "<strong>Target:</strong>"):
+            self.assertNotIn(absent, html)
+
+    def test_content_is_escaped(self):
+        html = self.render(opener="a < b & c",
+                           action_items=[{"text": "<script>x</script>", "status": "pending"}])
+        self.assertNotIn("<script>", html)
+        self.assertIn("&lt;script&gt;", html)
+        self.assertIn("a &lt; b &amp; c", html)
+
+
+class MomJsonPromptContract(unittest.TestCase):
+    """The prompt and the renderer must agree on the vocabulary, or the model
+    emits fields the template silently drops."""
+
+    def test_prompt_declares_every_rendered_key(self):
+        for key in ("subject", "opener", "status_tag", "target", "also_discussed",
+                    "action_items", "group", "due", "closing"):
+            self.assertIn(f'"{key}"', server.MOM_JSON_INSTRUCTIONS, key)
+
+    def test_prompt_declares_every_status(self):
+        for status in server._STATUS:
+            self.assertIn(status, server.MOM_JSON_INSTRUCTIONS, status)
+
+    def test_prompt_declares_every_group(self):
+        for gid, _ in server._GROUPS:
+            self.assertIn(gid, server.MOM_JSON_INSTRUCTIONS, gid)
+
+    def test_reasoning_standard_present_in_all_prompt_paths(self):
+        import summarize_mom
+        self.assertIn("REASONING STANDARD", server.MOM_JSON_INSTRUCTIONS)
+        self.assertIn("REASONING STANDARD", server.PROMPT_TEMPLATE)
+        self.assertIn("REASONING STANDARD", summarize_mom.PROMPT_TEMPLATE)
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "Gemini MoM Prompt.md"), encoding="utf-8") as f:
+            self.assertIn("REASONING STANDARD", f.read())
+
+    def test_markdown_prompts_stay_in_sync(self):
+        import summarize_mom
+        self.assertEqual(server.PROMPT_TEMPLATE, summarize_mom.PROMPT_TEMPLATE)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
