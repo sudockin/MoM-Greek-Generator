@@ -115,6 +115,56 @@ class TeamsLayout(unittest.TestCase):
         self.assertEqual(ocr.roster_match("Nikos Andreo...", roster), "Nikos Andreopoulos")
 
 
+class GreekAndForeignNames(unittest.TestCase):
+    """Greek-script display names must identify the right person.
+
+    Apple Vision renders Greek glyphs as the LATIN letters they resemble
+    ('Καραγιάννη' -> 'Kapaylavvn') or as Cyrillic look-alikes ('Χαιρετάκης' ->
+    'Харетак'), and Teams truncates long names. All strings below were observed
+    in a real Teams recording."""
+
+    ROSTER = ("Nikos Andreopoulos, Ποντίκας Δημήτρης, Giorgos Kyrikos, "
+              "Shmal Vyacheslav, Καραγιάννη Ευθυμία, Μιχαηλίδης Ευάγγελος, "
+              "Filippos, Χαιρετάκης Νικόλαος, Dimitris K, Paminos Valsamakis, "
+              "Efthymia Mavrokefalou")
+
+    def setUp(self):
+        self.roster = ocr.parse_roster(self.ROSTER)
+
+    def test_greek_attendees_survive_parsing(self):
+        # normalize() used to strip every non-Latin letter, so Greek-script
+        # attendees vanished from the roster before matching even started.
+        self.assertEqual(len(self.roster), 11)
+
+    def test_normalize_keeps_greek(self):
+        self.assertEqual(ocr.normalize("Χαιρετάκης"), "χαιρετακης")
+
+    def test_greek_and_mangled_variants_resolve(self):
+        for tag, want in [
+            ("Χαιρετάκης Νικόλαος", "Χαιρετάκης Νικόλαος"),
+            ("Харетак NIKÓNaos", "Χαιρετάκης Νικόλαος"),     # Cyrillic look-alikes
+            ("Kapaylavvn E...", "Καραγιάννη Ευθυμία"),       # Latin look-alikes
+            ("Mixandions Euk...", "Μιχαηλίδης Ευάγγελος"),
+            ("Потікас Aпи...", "Ποντίκας Δημήτρης"),
+            ("Nikos Andreo...", "Nikos Andreopoulos"),       # truncated Latin
+            ("Efthymi...", "Efthymia Mavrokefalou"),
+            ("Shmal Vyache...", "Shmal Vyacheslav"),         # non-Greek foreign name
+        ]:
+            self.assertEqual(ocr.roster_match(tag, self.roster), want, tag)
+
+    def test_no_false_positives(self):
+        for junk in ["Logs Table JSON", "Table Explorer", "Data Quality",
+                     "Alex Rivera", "Sam Chen", "Σύνολο Παραγγελιών"]:
+            self.assertIsNone(ocr.roster_match(junk, self.roster), junk)
+
+    def test_forename_collision_rejected(self):
+        # A surname+forename tag must not be swallowed by a different attendee
+        # who merely shares a forename.
+        roster = ocr.parse_roster("Nikos Andreopoulos, Χαιρετάκης Νικόλαος")
+        self.assertEqual(ocr.roster_match("Харетак NIKÓNaos", roster),
+                         "Χαιρετάκης Νικόλαος")
+
+
 class ModelDiscovery(unittest.TestCase):
     def test_whispercpp_dir_has_no_hardcoded_personal_path(self):
         # The discovered dir may legitimately live under THIS user's $HOME

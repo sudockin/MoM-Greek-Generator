@@ -55,6 +55,11 @@ TEAMS_MAX_Y = _envf("MOM_OCR_TEAMS_MAX_Y", 0.10)
 # bottom name when a roster already vouches for it (never widens acceptance alone).
 BOTTOM_STRIP_MAX_Y = _envf("MOM_OCR_BOTTOM_MAX_Y", 0.12)
 ROSTER_MATCH_MIN = _envf("MOM_OCR_ROSTER_MIN", 0.72)   # fuzzy ratio to accept an OCR string as a roster name
+# A weaker match is still trustworthy when nothing else comes close: heavily
+# mangled Greek tags land near 0.70, but only ever near ONE attendee. Junk text
+# scores low against everybody, so it has no clear winner and is still rejected.
+ROSTER_MATCH_LOW = _envf("MOM_OCR_ROSTER_LOW", 0.62)
+ROSTER_MATCH_MARGIN = _envf("MOM_OCR_ROSTER_MARGIN", 0.12)
 # Microsoft Teams highlights the ACTIVE speaker's name with a coloured badge
 # (measured ~RGB 96-99,100-101,164-167 -> luminance ~121); every other name sits
 # on black (luminance 0). That is a far stronger signal than position, so when a
@@ -110,11 +115,77 @@ def _strict_token_ok(tok):
     return True
 
 
+# Greek -> Latin, and the Cyrillic letters Apple Vision substitutes for
+# visually-identical Greek ones (it reads "Χαιρετάκης" as "Харетак"). Both map
+# into one Latin space so a Greek display name, its OCR mangling and a
+# Latin-spelled attendee entry all compare against each other.
+_TRANSLIT = {
+    # Greek
+    "α": "a", "β": "v", "γ": "g", "δ": "d", "ε": "e", "ζ": "z", "η": "i",
+    "θ": "th", "ι": "i", "κ": "k", "λ": "l", "μ": "m", "ν": "n", "ξ": "x",
+    "ο": "o", "π": "p", "ρ": "r", "σ": "s", "ς": "s", "τ": "t", "υ": "y",
+    "φ": "f", "χ": "ch", "ψ": "ps", "ω": "o",
+    # Cyrillic look-alikes (OCR confusion, not real Russian text)
+    "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ж": "z",
+    "з": "z", "и": "i", "й": "i", "к": "k", "л": "l", "м": "m", "н": "n",
+    "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "y", "ф": "f",
+    "х": "ch", "ц": "ts", "ч": "ch", "ш": "sh", "щ": "sh", "ы": "y",
+    "э": "e", "ю": "yu", "я": "ya", "ь": "", "ъ": "",
+}
+
+
 def normalize(s):
+    """Accent-free lowercase text, keeping letters of ANY script.
+
+    The old version stripped everything outside [a-zA-Z], which silently
+    reduced every Greek-script name to an empty string — so Greek attendees
+    were dropped from the roster entirely and could never be matched."""
     s = unicodedata.normalize("NFKD", s or "")
     s = "".join(c for c in s if not unicodedata.combining(c))
-    s = re.sub(r"[^a-zA-Z ]+", " ", s).lower()
+    s = "".join(c if (c.isalpha() or c.isspace()) else " " for c in s).lower()
     return re.sub(r"\s+", " ", s).strip()
+
+
+def translit(s):
+    """Normalized text folded into Latin, so 'Χαιρετάκης', its OCR mangling
+    'Харетак' and a Latin-spelled 'Chairetakis' all land in the same space."""
+    return "".join(_TRANSLIT.get(c, c) for c in normalize(s))
+
+
+# Vision reads Greek glyphs as the LATIN letters they look like, not the ones
+# they sound like: "Καραγιάννη" comes back as "Kapaylavvn" (ρ→p, γ→y, ι→l, ν→v).
+# Phonetic transliteration cannot undo that, so names are also compared with
+# visually-confusable glyphs collapsed into one class per shape.
+_SHAPE = {}
+for _cls, _chars in {
+    "a": "aαа", "b": "bβв", "d": "dδд", "e": "eεе", "f": "fφ",
+    "g": "g", "h": "h", "i": "iιίі1lλ", "k": "kκк", "m": "mμмu",
+    "n": "nηнπ", "o": "oοо0", "p": "pρр", "r": "r", "s": "sσςс",
+    "t": "tτт", "v": "vν", "w": "wω", "x": "xξχх", "y": "yγуυ",
+    "z": "zζ", "c": "c", "j": "j", "q": "q", "th": "θ", "ps": "ψ",
+}.items():
+    for _ch in _chars:
+        _SHAPE[_ch] = _cls
+
+
+def shape_fold(s):
+    """Normalized text with visually-confusable glyphs collapsed, so an OCR
+    misreading of a Greek name lines up with the real name."""
+    return "".join(_SHAPE.get(c, c) for c in normalize(s))
+
+
+def _name_ratio(a_forms, b_forms):
+    """Best similarity across the comparison spaces, plus a prefix-tolerant
+    pass: Teams truncates long names on narrow tiles ('Nikos Andreo…'), so a
+    short tag is also compared against the same-length head of the full name."""
+    best = 0.0
+    for a, b in zip(a_forms, b_forms):
+        if not a or not b:
+            continue
+        best = max(best, difflib.SequenceMatcher(None, a, b).ratio())
+        if len(a) + 2 < len(b):   # a looks truncated -> compare like-for-like
+            best = max(best, difflib.SequenceMatcher(None, a, b[:len(a)]).ratio())
+    return best
 
 
 def strip_company_tag(s):
@@ -151,21 +222,25 @@ def is_person_name(s, allow_single=False, strict=False):
             return False
         if not all(c.isalpha() or c in ".'’-" for c in t):
             return False
-        if _mixed_script(t):
-            return False
         if normalize(t) in _UI_TOKENS or t.lower().rstrip(".") in _GREEK_UI_TOKENS:
             return False
-        if strict and not _strict_token_ok(t):
+        # Mixed Greek/Latin is OCR garbage on a shared screen — but it is also
+        # exactly how Vision renders a Greek display name ("NIKÓNaos"), so only
+        # reject it when no roster is around to vouch for the name.
+        if strict and (_mixed_script(t) or not _strict_token_ok(t)):
             return False
     return normalize(s) not in STOPWORDS
 
 
 def parse_roster(raw):
-    """Attendee string -> [(canonical_name, normalized_name)] for fuzzy matching."""
+    """Attendee string -> [(canonical_name, translit_name)] for fuzzy matching.
+
+    Compared in transliterated form so an attendee typed in Greek and an
+    on-screen tag OCR'd into Latin (or Cyrillic) still meet."""
     if not raw:
         return None
     names = [n.strip() for n in re.split(r"[,\n;]+", raw) if n.strip()]
-    pairs = [(n, normalize(n)) for n in names]
+    pairs = [(n, translit(n)) for n in names]
     pairs = [(c, rn) for c, rn in pairs if rn]
     return pairs or None
 
@@ -177,17 +252,31 @@ def roster_match(text, roster_pairs):
     Also matches a single on-screen first name ('Alex') against a full roster
     entry ('Alex Rivera') by taking the best of the full-string and per-token
     ratios — a first name IS a strong signal since it must be an attendee token."""
-    cn = normalize(text)
-    if not cn:
+    forms = (translit(text), shape_fold(text))
+    if not any(forms):
         return None
-    best, best_r = None, 0.0
+    single = len(forms[0].split()) == 1
+    best, best_r, runner_r = None, 0.0, 0.0
     for canon, rn in roster_pairs:
-        r = difflib.SequenceMatcher(None, cn, rn).ratio()
-        for tok in rn.split():
-            r = max(r, difflib.SequenceMatcher(None, cn, tok).ratio())
+        rforms = (rn, shape_fold(canon))
+        r = _name_ratio(forms, rforms)
+        # Compare against individual roster tokens ONLY for a lone on-screen
+        # first name. Doing it for multi-token text let a surname-plus-forename
+        # tag collide with an unrelated attendee who shares a forename
+        # ("Харетак NIKONaos" -> "Nikos Andreopoulos").
+        if single:
+            for rf, tf in ((rforms[0], forms[0]), (rforms[1], forms[1])):
+                for tok in rf.split():
+                    r = max(r, _name_ratio((tf,), (tok,)))
         if r > best_r:
-            best_r, best = r, canon
-    return best if best_r >= ROSTER_MATCH_MIN else None
+            best_r, runner_r, best = r, best_r, canon
+        elif r > runner_r:
+            runner_r = r
+    if best_r >= ROSTER_MATCH_MIN:
+        return best
+    if best_r >= ROSTER_MATCH_LOW and (best_r - runner_r) >= ROSTER_MATCH_MARGIN:
+        return best
+    return None
 
 
 def _open_frame(image_path):
