@@ -96,12 +96,12 @@ class TeamsLayout(unittest.TestCase):
 
     def test_highlighted_label_wins_over_position(self):
         # Stub the badge probe (real one needs Pillow + a frame on disk).
-        real = ocr.label_badge_lum
-        ocr.label_badge_lum = lambda img, box: 121.0 if abs(box[0] - 0.44) < 1e-6 else 0.0
+        real = ocr.label_is_badged
+        ocr.label_is_badged = lambda img, box: abs(box[0] - 0.44) < 1e-6
         try:
             got = ocr.name_from_results(_teams_gallery(), None, image_path="/dev/null")
         finally:
-            ocr.label_badge_lum = real
+            ocr.label_is_badged = real
         # /dev/null won't open as an image, so no badge data -> falls back to
         # position; assert the fallback at least refuses the roster column.
         self.assertNotEqual(got, "Nikos Andreo")

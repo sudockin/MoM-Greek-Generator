@@ -65,6 +65,13 @@ ROSTER_MATCH_MARGIN = _envf("MOM_OCR_ROSTER_MARGIN", 0.12)
 # on black (luminance 0). That is a far stronger signal than position, so when a
 # badge is visible it decides who was speaking.
 BADGE_MIN_LUM = _envf("MOM_OCR_BADGE_MIN_LUM", 40.0)
+# Brightness alone is not enough: Teams draws avatar monogram circles ("NA",
+# "ΠΔ") whose pastel fill is BRIGHTER than the badge (measured 214-220 vs 120)
+# and would outrank it. The badge is identified by its blue-violet hue instead —
+# measured B-R +70 / B-G +62, where the pale-blue avatars reach only +30/+17 and
+# the pink ones go negative.
+BADGE_MAX_LUM = _envf("MOM_OCR_BADGE_MAX_LUM", 190.0)
+BADGE_MIN_BLUE = _envf("MOM_OCR_BADGE_MIN_BLUE", 30.0)
 # Teams also lists non-visible participants in a static right-hand column; 3+
 # name tags sharing an x are that roster, never the active speaker.
 ROSTER_COL_MIN = int(_envf("MOM_OCR_ROSTER_COL_MIN", 3))
@@ -174,6 +181,29 @@ def shape_fold(s):
     return "".join(_SHAPE.get(c, c) for c in normalize(s))
 
 
+def _tok_ratio(a, b):
+    """Similarity of two name tokens, tolerating truncation ('Andreo' vs
+    'Andreopoulos')."""
+    r = difflib.SequenceMatcher(None, a, b).ratio()
+    if len(a) + 2 < len(b):
+        r = max(r, difflib.SequenceMatcher(None, a, b[:len(a)]).ratio())
+    return r
+
+
+def token_align(a, b):
+    """Match a tag against a name token-by-token, each tag token taking its best
+    partner (so word order doesn't matter), averaged.
+
+    Whole-string similarity is too blunt when two people share a forename:
+    'Χαιρετάκης Νικόλαος' and 'Nikos Andreopoulos' overlap heavily as strings,
+    but token-wise the surnames are decisively different — and the surname is
+    what tells them apart."""
+    at, bt = a.split(), b.split()
+    if not at or not bt:
+        return 0.0
+    return sum(max(_tok_ratio(x, y) for y in bt) for x in at) / len(at)
+
+
 def _name_ratio(a_forms, b_forms):
     """Best similarity across the comparison spaces, plus a prefix-tolerant
     pass: Teams truncates long names on narrow tiles ('Nikos Andreo…'), so a
@@ -214,6 +244,9 @@ def is_person_name(s, allow_single=False, strict=False):
     toks = s.split()
     lo = 1 if allow_single else 2
     if not (lo <= len(toks) <= 3):
+        return False
+    # A lone 2-letter token is an avatar monogram ("NA", "ΠΔ"), not a name.
+    if len(toks) == 1 and len(toks[0].rstrip(".")) < 3:
         return False
     if any(ch.isdigit() for ch in s) or any(ch in _BAD_CHARS for ch in s):
         return False
@@ -260,6 +293,8 @@ def roster_match(text, roster_pairs):
     for canon, rn in roster_pairs:
         rforms = (rn, shape_fold(canon))
         r = _name_ratio(forms, rforms)
+        for tf, rf in zip(forms, rforms):
+            r = max(r, token_align(tf, rf))
         # Compare against individual roster tokens ONLY for a lone on-screen
         # first name. Doing it for multi-token text let a surname-plus-forename
         # tag collide with an unrelated attendee who shares a forename
@@ -287,25 +322,35 @@ def _open_frame(image_path):
         return None
 
 
-def label_badge_lum(img, box):
-    """Luminance of a name label's BACKGROUND — the modal colour inside its box,
-    since the badge fills the box and the glyphs are a minority of pixels.
-    Teams' active-speaker badge reads ~121; an unhighlighted name reads ~0."""
+def label_bg_colour(img, box):
+    """A name label's BACKGROUND colour — the modal colour inside its box, since
+    the badge fills the box and the glyphs are a minority of pixels."""
     if img is None:
-        return 0.0
-    import collections as _c
+        return None
     x, y, w, h = box
     W, H = img.size
     left, top = int(x * W), int((1.0 - y - h) * H)
     right, bottom = int((x + w) * W), int((1.0 - y) * H)
     if right <= left or bottom <= top:
-        return 0.0
+        return None
     try:
         crop = img.crop((max(0, left), max(0, top), min(W, right), min(H, bottom)))
-        rgb = _c.Counter(crop.getdata()).most_common(1)[0][0]
+        return collections.Counter(crop.getdata()).most_common(1)[0][0][:3]
     except Exception:
-        return 0.0
-    return sum(rgb[:3]) / 3.0
+        return None
+
+
+def label_is_badged(img, box):
+    """True when a label sits on the platform's active-speaker badge.
+
+    Matches on the badge's blue-violet hue, not merely on brightness — see
+    BADGE_MAX_LUM/BADGE_MIN_BLUE for why avatar monograms would otherwise win."""
+    rgb = label_bg_colour(img, box)
+    if not rgb:
+        return False
+    r, g, b = rgb
+    return (BADGE_MIN_LUM <= (r + g + b) / 3.0 <= BADGE_MAX_LUM
+            and (b - r) >= BADGE_MIN_BLUE and (b - g) >= BADGE_MIN_BLUE)
 
 
 def name_from_results(results, roster_pairs=None, image_path=None):
@@ -333,11 +378,10 @@ def name_from_results(results, roster_pairs=None, image_path=None):
         # shared-screen app text, so they switch on exactly then.
         if not is_person_name(t, allow_single=bool(roster_pairs), strict=not roster_pairs):
             continue
-        name = t
-        if roster_pairs:
-            name = roster_match(t, roster_pairs)
-            if not name:
-                continue
+        # Unresolvable tags stay in the list with name=None: they still carry the
+        # badge, and a badge we cannot name must block the positional fallback
+        # rather than let it credit somebody else.
+        name = roster_match(t, roster_pairs) if roster_pairs else t
         prelim.append({"name": name, "conf": conf, "x": x, "y": y, "box": (x, y, w, h)})
     if not prelim:
         return None
@@ -354,13 +398,16 @@ def name_from_results(results, roster_pairs=None, image_path=None):
     if len(prelim) > 1 and image_path:
         img = _open_frame(image_path)
         if img is not None:
-            lit = [c for c in prelim if label_badge_lum(img, c["box"]) >= BADGE_MIN_LUM]
+            lit = [c for c in prelim if label_is_badged(img, c["box"])]
             if lit:
                 lit.sort(key=lambda c: -c["conf"])
+                # May be None: the platform told us who is speaking and it isn't
+                # anyone we can name, so report unknown. The caller carries the
+                # previous speaker over, which beats naming the wrong person.
                 return lit[0]["name"]
 
     cands = []
-    for c in prelim:
+    for c in (c for c in prelim if c["name"]):
         right = c["x"] > RIGHT_TILE_MIN_X
         teams = c["x"] < TEAMS_MAX_X and c["y"] < TEAMS_MAX_Y
         bottom = c["y"] < BOTTOM_STRIP_MAX_Y
