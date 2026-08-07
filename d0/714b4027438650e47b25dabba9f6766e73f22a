@@ -1,0 +1,21 @@
+ocr_speakers.py
+  s_35871ec8847162::t_ce472fde7e0fb2 696-698,704-707
+  s_35871ec8847162::t_fb858ab613e6fe 630-682
+  s_35871ec8847162::t_c172f81b2e0f74 708
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "d0714b4027438650e47b25dabba9f6766e73f22a",
+  "prompts": {},
+  "sessions": {
+    "s_35871ec8847162": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9fad9abf-c0af-4eb6-8381-8280b675fffa",
+        "model": "claude-opus-5"
+      },
+      "human_author": "pj <e.valsamakis@gmail.com>"
+    }
+  }
+}
