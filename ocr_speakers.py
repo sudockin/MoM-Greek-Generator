@@ -3,15 +3,24 @@
 speaker, by OCR-ing the speaker's name tag. Fully local (Apple Vision via
 ocrmac) — no tokens. Run inside the WhisperX venv (which has ocrmac installed).
 
-Primary target: Google Meet. During a screen-share, Meet floats the active
-speaker as a thumbnail (default bottom-RIGHT) with the name tag at the tile's
-bottom-left — measured at x≈0.75, y≈0.38 (origin bottom-left). Microsoft Teams
-(name hard bottom-left, x<0.06) is still supported. Doc/UI text false positives
-sit in the left column (x<0.3) and are filtered out by position + an optional
-attendee roster.
+Two meeting platforms, two different signals — both measured from real
+recordings (use --inspect to do the same for a new platform):
+
+* Google Meet shows ONLY the active speaker during a share, as a floating
+  thumbnail (default bottom-RIGHT) with the name tag at its bottom-left —
+  measured x≈0.75, y≈0.38 (origin bottom-left). Position therefore identifies
+  the speaker. Doc/UI false positives sit in the left column and are filtered
+  out by position + an optional attendee roster.
+* Microsoft Teams shows EVERYONE at once (a tile grid plus a static right-hand
+  column of overflow participants), so position says nothing. Teams instead
+  highlights the active speaker's name with a coloured badge — measured
+  RGB ~(97,100,166), luminance ~121, against 0 for every other label — and that
+  badge decides. Older Teams speaker view (name hard bottom-left, x<0.06) is
+  still handled by the positional fallback.
 
 CLI:  python ocr_speakers.py VIDEO [audio.json] --name-transcript [--step 4]
                                    [--roster "Name One, Name Two"]
+      python ocr_speakers.py VIDEO --inspect      # report a recording's layout
 """
 import argparse
 import bisect
@@ -224,7 +233,6 @@ def name_from_results(results, roster_pairs=None, image_path=None):
 
     With a roster, only attendee names are accepted, which is bulletproof
     against shared-screen text."""
-    img = _open_frame(image_path) if image_path else None
     prelim = []
     for text, conf, (x, y, w, h) in results:
         t = strip_company_tag((text or "").strip())
@@ -250,11 +258,17 @@ def name_from_results(results, roster_pairs=None, image_path=None):
     for c in prelim:
         c["roster_col"] = cols[round(c["x"], 2)] >= ROSTER_COL_MIN
 
-    if img is not None:
-        lit = [c for c in prelim if label_badge_lum(img, c["box"]) >= BADGE_MIN_LUM]
-        if lit:
-            lit.sort(key=lambda c: -c["conf"])
-            return lit[0]["name"]
+    # Reading the badge means decoding the frame, so only do it when there is
+    # actually something to disambiguate. Meet shows one name (the floating
+    # active-speaker tile) and skips the decode entirely; Teams shows the whole
+    # gallery at once and needs it.
+    if len(prelim) > 1 and image_path:
+        img = _open_frame(image_path)
+        if img is not None:
+            lit = [c for c in prelim if label_badge_lum(img, c["box"]) >= BADGE_MIN_LUM]
+            if lit:
+                lit.sort(key=lambda c: -c["conf"])
+                return lit[0]["name"]
 
     cands = []
     for c in prelim:

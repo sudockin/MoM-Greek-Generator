@@ -108,12 +108,20 @@ Tuning for unusual layouts (all optional): `MOM_SCREEN_MIN_BOXES`,
 
 ### 🎥 Speaker names from the video (OCR — no token, no account)
 
-For **video-call recordings** (Google Meet or Teams), the active speaker's name
-is shown on screen. The app reads those names with Apple's on-device Vision OCR
+For **video-call recordings** (Google Meet or Microsoft Teams), the active speaker's
+name is shown on screen. The app reads those names with Apple's on-device Vision OCR
 and labels each line of the transcript with whoever was speaking — **real names**,
 **no HuggingFace token and no account**. All local. Providing the **Attendees**
-list makes this rock-solid: OCR only accepts names that match an attendee (it now
-also matches single first names and `Name (Company)` tags).
+list makes this rock-solid: OCR only accepts names that match an attendee (it also
+matches single first names, `Name (Company)` tags, and the truncated names Teams
+shows on narrow tiles).
+
+Each platform is handled on its own terms: **Meet** floats only the active speaker,
+so their position identifies them; **Teams** shows the whole gallery at once and
+highlights the speaker's name with a coloured badge, which the app detects instead.
+Measured on a real 56-minute Teams call, that gives **100% of segments named**.
+Running into a layout that isn't handled? `python3 ocr_speakers.py YOUR_VIDEO.mp4 --inspect`
+prints where that recording puts its text, which is how these rules were derived.
 
 After processing, a **Speaker names** panel shows the detected names; correct any
 that look off and click **Apply names**. It never invents a name — segments it
