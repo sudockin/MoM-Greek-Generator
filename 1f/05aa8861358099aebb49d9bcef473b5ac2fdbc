@@ -1,0 +1,30 @@
+ocr_speakers.py
+  s_35871ec8847162::t_d7f790740dced0 155-190
+  s_35871ec8847162::t_80ddc918f44abe 255-256,258,261-262,268-270
+  s_35871ec8847162::t_44fbfe84ae9bb9 259
+  s_35871ec8847162::t_ae18c313b71f7e 227-230
+  s_35871ec8847162::t_26d1ff4c4a6d18 263-267
+  s_35871ec8847162::t_08d3ac6e1e7d6c 58-62
+  s_35871ec8847162::t_66519049a6da7a 118-136,138-142,145,149-152
+  s_35871ec8847162::t_04686e1b9bfa79 236-239,243
+  s_35871ec8847162::t_d9729dc0139d30 272-279
+  s_35871ec8847162::t_3d24284484845a 153-154
+test_speaker_naming.py
+  s_35871ec8847162::t_ddb764f25b6c1a 118-167
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "1f05aa8861358099aebb49d9bcef473b5ac2fdbc",
+  "prompts": {},
+  "sessions": {
+    "s_35871ec8847162": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9fad9abf-c0af-4eb6-8381-8280b675fffa",
+        "model": "claude-opus-5"
+      },
+      "human_author": "pj <e.valsamakis@gmail.com>"
+    }
+  }
+}
