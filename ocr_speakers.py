@@ -627,6 +627,59 @@ def assign_transcript(video, audio_json, step=4.0, ffmpeg=None, progress=None,
     return transcript, roster, speakers, screens
 
 
+def inspect_layout(video, step=20.0, ffmpeg=None, roster_pairs=None, limit=40):
+    """Print where this recording puts its text: which frames look like a screen
+    share, and where person-name tags cluster (the meeting platform's speaker
+    tile). Use this to tune a NEW platform's layout from evidence instead of
+    guessing — every geometry constant here was derived this way.
+
+    Zones use the ocrmac convention: normalized, origin BOTTOM-left."""
+    ffmpeg = ffmpeg or FFMPEG
+    zones = collections.Counter()
+    tag_pts, share_frames, total = [], 0, 0
+    with tempfile.TemporaryDirectory() as tmp:
+        out = os.path.join(tmp, "f_%05d.jpg")
+        subprocess.run([ffmpeg, "-y", "-i", video, "-vf", f"fps=1/{step}", "-q:v", "4", out],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+        paths = [os.path.join(tmp, f) for f in
+                 sorted(x for x in os.listdir(tmp) if x.endswith(".jpg"))][:limit]
+        with concurrent.futures.ThreadPoolExecutor(max_workers=6) as ex:
+            for i, res in enumerate(ex.map(_ocr_one, paths)):
+                total += 1
+                boxes, chars, _sig, _lines, rects = _frame_text_stats(res)
+                share = boxes >= SHARE_MIN_BOXES and chars >= SHARE_MIN_CHARS
+                share_frames += 1 if share else 0
+                for x, y, w, h, t in rects:
+                    if not is_person_name(t, allow_single=bool(roster_pairs)):
+                        continue
+                    if roster_pairs and not roster_match(t, roster_pairs):
+                        continue
+                    tag_pts.append((x, y, h, t, share))
+                    zones["%s-%s" % ("right" if x >= 0.6 else "left" if x <= 0.1 else "middle",
+                                     "top" if y >= 0.8 else "bottom" if y <= 0.15 else "middle")] += 1
+    print(f"frames sampled     : {total} (every {step:g}s)")
+    print(f"look like a share  : {share_frames}  ({100 * share_frames // max(total, 1)}%)")
+    print(f"name tags found    : {len(tag_pts)}"
+          f"  ({sum(1 for p in tag_pts if p[4])} of them on share frames)")
+    if zones:
+        print("tag zones (x-y)    : " + ", ".join(f"{z}={n}" for z, n in zones.most_common()))
+    share_tags = [(x, y, h, t) for x, y, h, t, s in tag_pts if s]
+    if share_tags:
+        xs = collections.Counter(round(x, 2) for x, _, _, _ in share_tags)
+        ys = collections.Counter(round(y, 2) for _, y, _, _ in share_tags)
+        print(f"share-frame tag x  : {xs.most_common(4)}")
+        print(f"share-frame tag y  : {ys.most_common(4)}")
+        print(f"tag heights        : {collections.Counter(round(h, 3) for _, _, h, _ in share_tags).most_common(3)}")
+        print("sample tags        : " + ", ".join(sorted({t for _, _, _, t in share_tags})[:6]))
+    else:
+        print("No name tags on share frames — this platform may render shared content "
+              "full-frame (no overlay tile). Cropping would then correctly do nothing.")
+    print("\nCurrent gates: RIGHT_TILE_MIN_X=%.2f TEAMS_MAX_X=%.2f/%.2f "
+          "TILE_ZONE_MIN_X=%.2f TILE_TAG_MAX_Y=%.2f SHARE_MIN_BOXES=%d SHARE_MIN_CHARS=%d"
+          % (RIGHT_TILE_MIN_X, TEAMS_MAX_X, TEAMS_MAX_Y, TILE_ZONE_MIN_X,
+             TILE_TAG_MAX_Y, SHARE_MIN_BOXES, SHARE_MIN_CHARS))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("video")
@@ -640,10 +693,18 @@ def main():
     ap.add_argument("--json", action="store_true", help="emit mapping+roster as JSON to stdout")
     ap.add_argument("--name-transcript", action="store_true",
                     help="token-free: label each segment of the given audio.json by on-screen name")
+    ap.add_argument("--inspect", action="store_true",
+                    help="report this recording's layout (share detection + where name tags "
+                         "sit) to tune a new meeting platform from evidence")
     args = ap.parse_args()
 
     prog = lambda i, n: print(f"  OCR {i}/{n}", file=sys.stderr)
     roster_pairs = parse_roster(args.roster)
+
+    if args.inspect:
+        inspect_layout(args.video, step=max(args.step, 20.0), ffmpeg=args.ffmpeg,
+                       roster_pairs=roster_pairs)
+        return
 
     if args.name_transcript:
         transcript, roster, speakers, screens = assign_transcript(
