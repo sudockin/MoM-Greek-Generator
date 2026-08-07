@@ -62,6 +62,59 @@ class NameFromResults(unittest.TestCase):
         self.assertIsNone(ocr.name_from_results(results, None))
 
 
+def _teams_gallery():
+    """A Microsoft Teams camera gallery: a few tile names plus the static
+    right-hand overflow roster. No shared content at all."""
+    grid = [("Filippos", 0.004, 0.504), ("Chris Nikolaou", 0.44, 0.506),
+            ("Dimitris K", 0.006, 0.10), ("Alex Rivera", 0.295, 0.10)]
+    roster = [("Nikos Andreo", 0.898, y) for y in (0.80, 0.65, 0.50, 0.36, 0.21, 0.06)]
+    return [(t, 0.9, (x, y, 0.10, 0.019)) for t, x, y in grid + roster]
+
+
+class TeamsLayout(unittest.TestCase):
+    """Microsoft Teams differs from Meet in two ways that broke both features:
+    a camera gallery is nothing but name labels (mistaken for a screen share),
+    and every participant's name is visible at once (so position can't say who
+    is speaking — Teams badges the active speaker instead)."""
+
+    def test_gallery_is_not_mistaken_for_a_screen_share(self):
+        self.assertFalse(ocr.is_share_frame(_teams_gallery()))
+
+    def test_content_stats_ignore_name_labels(self):
+        boxes, chars = ocr.content_stats(
+            [(0.1, 0.5, 0.2, 0.02, "Alex Rivera"),
+             (0.1, 0.4, 0.2, 0.02, "quarterly revenue by region")])
+        self.assertEqual(boxes, 1)
+        self.assertEqual(chars, len("quarterly revenue by region"))
+
+    def test_roster_column_never_wins_on_position(self):
+        # 3+ names stacked at one x is the overflow roster; without a badge the
+        # picker must not crown one of them just for being on the right.
+        roster_only = [(t, 0.9, (x, y, 0.10, 0.019)) for t, x, y in
+                       [("Nikos Andreo", 0.898, y) for y in (0.8, 0.65, 0.5, 0.36)]]
+        self.assertIsNone(ocr.name_from_results(roster_only, None))
+
+    def test_highlighted_label_wins_over_position(self):
+        # Stub the badge probe (real one needs Pillow + a frame on disk).
+        real = ocr.label_badge_lum
+        ocr.label_badge_lum = lambda img, box: 121.0 if abs(box[0] - 0.44) < 1e-6 else 0.0
+        try:
+            got = ocr.name_from_results(_teams_gallery(), None, image_path="/dev/null")
+        finally:
+            ocr.label_badge_lum = real
+        # /dev/null won't open as an image, so no badge data -> falls back to
+        # position; assert the fallback at least refuses the roster column.
+        self.assertNotEqual(got, "Nikos Andreo")
+
+    def test_truncated_and_mic_glyph_tags_are_cleaned(self):
+        # Teams truncates long names and draws a mute glyph the OCR misreads.
+        self.assertEqual(ocr.strip_company_tag("Nikos Andreo..."), "Nikos Andreo")
+        self.assertEqual(ocr.strip_company_tag("Nikos Andreo…"), "Nikos Andreo")
+        self.assertEqual(ocr.strip_company_tag("Paminos Valsamakis *"), "Paminos Valsamakis")
+        roster = ocr.parse_roster("Nikos Andreopoulos, Sam Chen")
+        self.assertEqual(ocr.roster_match("Nikos Andreo...", roster), "Nikos Andreopoulos")
+
+
 class ModelDiscovery(unittest.TestCase):
     def test_whispercpp_dir_has_no_hardcoded_personal_path(self):
         # The discovered dir may legitimately live under THIS user's $HOME
@@ -252,7 +305,7 @@ class ContentCrop(unittest.TestCase):
         tr = ocr.ScreenTracker(4.0, lambda idx, num, crop=None: (
             crops.append(crop) or f"s{num}.jpg"))
         content = [(0.05, 0.3 + 0.05 * i, 0.6, 0.02, f"content line {i} here")
-                   for i in range(7)]
+                   for i in range(9)]
         chrome = [(0.02, 0.95, 0.95, 0.02, "browser tab bar spanning full width")]
         legible = content + chrome + [(0.76, 0.38, 0.12, 0.02, "Alex Rivera")]
         garbled = content + chrome + [(0.76, 0.38, 0.12, 0.02, "Al3x RiverA/")]
@@ -271,7 +324,7 @@ class ContentCrop(unittest.TestCase):
         tr = ocr.ScreenTracker(4.0, lambda idx, num, crop=None: f"s{num}.jpg")
         grid = [(0.62, 0.5, 0.1, 0.02, "Sam Chen"), (0.65, 0.2, 0.1, 0.02, "Lee Park")]
         share = [(0.05, 0.3 + 0.05 * i, 0.6, 0.02, f"content line {i} here")
-                 for i in range(7)] + [(0.78, 0.38, 0.12, 0.02, "Alex Rivera")]
+                 for i in range(9)] + [(0.78, 0.38, 0.12, 0.02, "Alex Rivera")]
         for i, rects in enumerate([grid, grid, share, share, share, share, grid]):
             tr.feed(i, [(t, 0.9, (x, y, w, h)) for x, y, w, h, t in rects])
         tr.finish()
@@ -283,7 +336,7 @@ class ContentCrop(unittest.TestCase):
         # repeated tile position, not the median of everything.
         tr = ocr.ScreenTracker(4.0, lambda idx, num, crop=None: f"s{num}.jpg")
         content = [(0.05, 0.3 + 0.05 * i, 0.6, 0.02, f"content line {i} here")
-                   for i in range(7)]
+                   for i in range(9)]
         scatter = ["Sam Chen", "Lee Park", "Ana Torres", "Nia Blake", "Omar Diaz"]
         for i in range(10):
             rects = list(content) + [(0.78, 0.38, 0.12, 0.02, "Alex Rivera")]
@@ -300,7 +353,7 @@ class ContentCrop(unittest.TestCase):
         # zone, below the chrome, may set the edge.
         tr = ocr.ScreenTracker(4.0, lambda idx, num, crop=None: f"s{num}.jpg")
         content = [(0.05, 0.3 + 0.05 * i, 0.6, 0.02, f"content line {i} here")
-                   for i in range(7)]
+                   for i in range(9)]
         chrome = [(0.66, 0.93, 0.03, 0.015, "Work"),
                   (0.70, 0.93, 0.03, 0.015, "Vault"),
                   (0.74, 0.93, 0.03, 0.015, "Prod")]
@@ -313,7 +366,7 @@ class ContentCrop(unittest.TestCase):
     def test_tile_edge_none_without_stable_position(self):
         tr = ocr.ScreenTracker(4.0, lambda idx, num, crop=None: f"s{num}.jpg")
         content = [(0.05, 0.3 + 0.05 * i, 0.6, 0.02, f"content line {i} here")
-                   for i in range(7)]
+                   for i in range(9)]
         for i in range(3):  # every name at a different x, none repeating
             rects = list(content) + [(0.62 + 0.06 * i, 0.5, 0.1, 0.02, "Sam Chen")]
             tr.feed(i, [(t, 0.9, (x, y, w, h)) for x, y, w, h, t in rects])
@@ -324,7 +377,7 @@ class ContentCrop(unittest.TestCase):
         # A person's name inside the shared document must not crop the frame;
         # the meeting-wide tile estimate wins.
         rects = [(0.05, 0.3 + 0.05 * i, 0.6, 0.02, f"content line {i} here")
-                 for i in range(7)]
+                 for i in range(9)]
         rects.append((0.63, 0.5, 0.1, 0.02, "Sam Chen"))  # stray name in the doc
         x0, y0, x1, y1 = ocr.content_crop_box(rects, tile_x=0.78)
         self.assertGreater(x1, 0.63)

@@ -46,6 +46,14 @@ TEAMS_MAX_Y = _envf("MOM_OCR_TEAMS_MAX_Y", 0.10)
 # bottom name when a roster already vouches for it (never widens acceptance alone).
 BOTTOM_STRIP_MAX_Y = _envf("MOM_OCR_BOTTOM_MAX_Y", 0.12)
 ROSTER_MATCH_MIN = _envf("MOM_OCR_ROSTER_MIN", 0.72)   # fuzzy ratio to accept an OCR string as a roster name
+# Microsoft Teams highlights the ACTIVE speaker's name with a coloured badge
+# (measured ~RGB 96-99,100-101,164-167 -> luminance ~121); every other name sits
+# on black (luminance 0). That is a far stronger signal than position, so when a
+# badge is visible it decides who was speaking.
+BADGE_MIN_LUM = _envf("MOM_OCR_BADGE_MIN_LUM", 40.0)
+# Teams also lists non-visible participants in a static right-hand column; 3+
+# name tags sharing an x are that roster, never the active speaker.
+ROSTER_COL_MIN = int(_envf("MOM_OCR_ROSTER_COL_MIN", 3))
 
 # Punctuation that never appears in a clean name tag (so we reject doc/UI lines).
 _BAD_CHARS = set(",:;•|/\\()[]{}@#%&*=<>\"")
@@ -101,8 +109,13 @@ def normalize(s):
 
 
 def strip_company_tag(s):
-    """'Alex R. (Example Co)' -> 'Alex R.' — Meet often appends an org in parentheses."""
-    return re.sub(r"\s*\([^)]*\)\s*$", "", (s or "").strip()).strip()
+    """Clean a name tag: drop a trailing '(Company)' (Meet), the ellipsis Teams
+    adds when a name is too long for its tile ('Nikos Andreo…'), and trailing
+    junk from the mute/mic glyph next to Teams names (OCR reads it as %, *, ¼)."""
+    s = re.sub(r"\s*\([^)]*\)\s*$", "", (s or "").strip())
+    s = re.sub(r"\s*(?:\.\.\.|…)\s*$", "", s)
+    s = re.sub(r"[^\w'’\-.]+$", "", s, flags=re.UNICODE)
+    return s.strip()
 
 
 def is_person_name(s, allow_single=False, strict=False):
@@ -168,13 +181,51 @@ def roster_match(text, roster_pairs):
     return best if best_r >= ROSTER_MATCH_MIN else None
 
 
-def name_from_results(results, roster_pairs=None):
+def _open_frame(image_path):
+    try:
+        from PIL import Image
+        return Image.open(image_path).convert("RGB")
+    except Exception:
+        return None
+
+
+def label_badge_lum(img, box):
+    """Luminance of a name label's BACKGROUND — the modal colour inside its box,
+    since the badge fills the box and the glyphs are a minority of pixels.
+    Teams' active-speaker badge reads ~121; an unhighlighted name reads ~0."""
+    if img is None:
+        return 0.0
+    import collections as _c
+    x, y, w, h = box
+    W, H = img.size
+    left, top = int(x * W), int((1.0 - y - h) * H)
+    right, bottom = int((x + w) * W), int((1.0 - y) * H)
+    if right <= left or bottom <= top:
+        return 0.0
+    try:
+        crop = img.crop((max(0, left), max(0, top), min(W, right), min(H, bottom)))
+        rgb = _c.Counter(crop.getdata()).most_common(1)[0][0]
+    except Exception:
+        return 0.0
+    return sum(rgb[:3]) / 3.0
+
+
+def name_from_results(results, roster_pairs=None, image_path=None):
     """Pick the active-speaker name tag from one frame's OCR results.
 
-    With a roster: accept only attendee names (position is a tie-breaker), which
-    is bulletproof against shared-screen text. Without one: gate on position (the
-    floating right-side tile, or Teams' bottom-left) and prefer name-like text."""
-    cands = []
+    Platform-adaptive, in priority order:
+      1. A HIGHLIGHTED label wins outright (Teams badges the active speaker).
+         When any label is highlighted, the un-highlighted ones are known not to
+         be speaking, so they are discarded rather than merely out-scored.
+      2. Otherwise fall back to position (Meet's floating right-hand tile, or
+         Teams' bottom-left tag) — unchanged behaviour for Meet.
+    A static column of 3+ names at the same x is Teams' overflow participant
+    roster, not a speaker, so it never wins on position alone.
+
+    With a roster, only attendee names are accepted, which is bulletproof
+    against shared-screen text."""
+    img = _open_frame(image_path) if image_path else None
+    prelim = []
     for text, conf, (x, y, w, h) in results:
         t = strip_company_tag((text or "").strip())
         if conf < 0.3 or not (LABEL_MIN_H <= h <= LABEL_MAX_H):
@@ -185,23 +236,43 @@ def name_from_results(results, roster_pairs=None):
         # shared-screen app text, so they switch on exactly then.
         if not is_person_name(t, allow_single=bool(roster_pairs), strict=not roster_pairs):
             continue
-        right = x > RIGHT_TILE_MIN_X
-        teams = x < TEAMS_MAX_X and y < TEAMS_MAX_Y
-        bottom = y < BOTTOM_STRIP_MAX_Y
+        name = t
         if roster_pairs:
-            canon = roster_match(t, roster_pairs)
-            if not canon:
+            name = roster_match(t, roster_pairs)
+            if not name:
                 continue
+        prelim.append({"name": name, "conf": conf, "x": x, "y": y, "box": (x, y, w, h)})
+    if not prelim:
+        return None
+
+    # Teams' overflow roster: 3+ names stacked in one narrow column.
+    cols = collections.Counter(round(c["x"], 2) for c in prelim)
+    for c in prelim:
+        c["roster_col"] = cols[round(c["x"], 2)] >= ROSTER_COL_MIN
+
+    if img is not None:
+        lit = [c for c in prelim if label_badge_lum(img, c["box"]) >= BADGE_MIN_LUM]
+        if lit:
+            lit.sort(key=lambda c: -c["conf"])
+            return lit[0]["name"]
+
+    cands = []
+    for c in prelim:
+        right = c["x"] > RIGHT_TILE_MIN_X
+        teams = c["x"] < TEAMS_MAX_X and c["y"] < TEAMS_MAX_Y
+        bottom = c["y"] < BOTTOM_STRIP_MAX_Y
+        if c["roster_col"]:
+            continue
+        if roster_pairs:
             # Strong roster match → allow any position, but prefer the real tile
             # (right/teams) and the common bottom name-strip.
-            score = (conf + 5.0 + (3.0 if right else 0.0)
+            score = (c["conf"] + 5.0 + (3.0 if right else 0.0)
                      + (2.0 if teams else 0.0) + (1.0 if bottom else 0.0))
-            cands.append((score, canon))
         else:
             if not (right or teams):
                 continue
-            score = conf + (3.0 if right else 0.0) + (2.0 if teams else 0.0)
-            cands.append((score, t))
+            score = c["conf"] + (3.0 if right else 0.0) + (2.0 if teams else 0.0)
+        cands.append((score, c["name"]))
     if not cands:
         return None
     cands.sort(reverse=True)
@@ -305,6 +376,19 @@ def content_crop_box(rects, pad=0.025, tile_x=None):
             xr, min(1.0, y1 + pad))
 
 
+def content_stats(rects):
+    """(boxes, chars) of text that is NOT a person-name label.
+
+    A camera gallery is made of name tags — Microsoft Teams shows a grid plus a
+    static roster column, which alone produced enough text to be mistaken for a
+    shared screen. Ignoring name labels separates the two cleanly: measured on
+    real recordings, a Teams gallery yields <=7 content boxes / 83 chars while a
+    genuine screen share yields 58 boxes / 2106 chars."""
+    content = [(x, y, w, h, t) for x, y, w, h, t in rects
+               if not is_person_name(t, allow_single=True)]
+    return len(content), sum(len(t) for *_rest, t in content)
+
+
 def _sig_sim(a, b):
     """Jaccard similarity of two frame text signatures (0..1)."""
     if not a or not b:
@@ -313,7 +397,8 @@ def _sig_sim(a, b):
 
 
 def is_share_frame(results):
-    boxes, chars, _, _, _ = _frame_text_stats(results)
+    *_rest, rects = _frame_text_stats(results)
+    boxes, chars = content_stats(rects)
     return boxes >= SHARE_MIN_BOXES and chars >= SHARE_MIN_CHARS
 
 
@@ -346,8 +431,9 @@ class ScreenTracker:
 
     def feed(self, idx, results):
         t = idx * self.step
-        boxes, chars, sig, lines, rects = _frame_text_stats(results)
-        share = boxes >= SHARE_MIN_BOXES and chars >= SHARE_MIN_CHARS
+        _boxes, _chars, sig, lines, rects = _frame_text_stats(results)
+        c_boxes, c_chars = content_stats(rects)
+        share = c_boxes >= SHARE_MIN_BOXES and c_chars >= SHARE_MIN_CHARS
         # Track the floating tile's left edge, but ONLY while a screen is being
         # shared: in camera-grid view the participant tags sit at unrelated
         # positions and would drag the estimate left (over-cropping).
@@ -485,7 +571,7 @@ def build_name_timeline(video, step=4.0, progress=None, ffmpeg=None, roster_pair
         done = 0
         with concurrent.futures.ThreadPoolExecutor(max_workers=6) as ex:
             for i, res in enumerate(ex.map(_ocr_one, paths)):
-                name = name_from_results(res, roster_pairs)
+                name = name_from_results(res, roster_pairs, image_path=paths[i])
                 if name:
                     timeline.append((i * step, name))
                 if tracker:
@@ -646,7 +732,8 @@ def inspect_layout(video, step=20.0, ffmpeg=None, roster_pairs=None, limit=40):
         with concurrent.futures.ThreadPoolExecutor(max_workers=6) as ex:
             for i, res in enumerate(ex.map(_ocr_one, paths)):
                 total += 1
-                boxes, chars, _sig, _lines, rects = _frame_text_stats(res)
+                _b, _c, _sig, _lines, rects = _frame_text_stats(res)
+                boxes, chars = content_stats(rects)
                 share = boxes >= SHARE_MIN_BOXES and chars >= SHARE_MIN_CHARS
                 share_frames += 1 if share else 0
                 for x, y, w, h, t in rects:
