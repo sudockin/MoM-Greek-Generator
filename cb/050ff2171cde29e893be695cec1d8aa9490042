@@ -1,0 +1,27 @@
+test_speaker_naming.py
+  s_35871ec8847162::t_988abbc50b97dc 99-100,104
+ocr_speakers.py
+  s_35871ec8847162::t_7424cc6947a4c7 68-74
+  s_35871ec8847162::t_988abbc50b97dc 248-250,401
+  s_35871ec8847162::t_1193ca39cacfa0 184-206
+  s_35871ec8847162::t_242c4654e959a6 296-297
+  s_35871ec8847162::t_c0130e84658f0d 381-384
+  s_35871ec8847162::t_c9d03a0751780e 325-327,329,335,338,340-353
+  s_35871ec8847162::t_55a738d4a7dfc3 404-406,410
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "cb050ff2171cde29e893be695cec1d8aa9490042",
+  "prompts": {},
+  "sessions": {
+    "s_35871ec8847162": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9fad9abf-c0af-4eb6-8381-8280b675fffa",
+        "model": "claude-opus-5"
+      },
+      "human_author": "pj <e.valsamakis@gmail.com>"
+    }
+  }
+}
